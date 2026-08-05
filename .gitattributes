@@ -1,8 +1,12 @@
-# Force LF in the index AND the working tree, on every platform.
+# Defense in depth, not the mechanism.
 #
-# Not cosmetic. The evaluator id is a hash over file contents — rubric.yaml,
-# the judge prompt template, verdict.schema.json. A Windows checkout with CRLF
-# and a Linux CI checkout with LF would hash to different evaluator ids for
-# identical content, so `verify` would fail on line endings and report it as
-# evaluator drift.
+# The evaluator id is a hash over file contents — rubric.yaml, the judge prompt
+# template, verdict.schema.json. A Windows checkout with CRLF and a Linux CI
+# checkout with LF would hash to different evaluator ids for identical content,
+# so `verify` would fail on line endings and report it as evaluator drift.
+#
+# This setting only governs files that arrive through a checkout of this repo.
+# The authority is normalizeBlob() in src/identity.ts, which every blob passes
+# through before hashing. That covers pasted rubrics, a contributor with a
+# mangled core.autocrlf, and files that reach disk by any other route.
 * text=auto eol=lf
