@@ -1,0 +1,13 @@
+{
+  // Typecheck config: src plus tests, no emit. Exists because tests/ sits
+  // outside the build's rootDir, and a test file matched by the build config
+  // makes tsc fail with TS6059 and spill .js next to the .ts.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

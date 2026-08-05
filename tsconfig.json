@@ -23,5 +23,7 @@
     "sourceMap": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  // Build config: src only. rootDir must contain every input or tsc refuses to
+  // emit, so tests live in tsconfig.test.json instead.
+  "include": ["src/**/*.ts"]
 }

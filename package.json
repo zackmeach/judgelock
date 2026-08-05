@@ -17,7 +17,7 @@
     "verify": "node --experimental-strip-types src/cli.ts verify",
     "validate": "node --experimental-strip-types src/cli.ts validate",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.test.json",
     "build": "tsc"
   },
   "dependencies": {
