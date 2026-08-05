@@ -1,0 +1,32 @@
+{
+  "name": "judgelock",
+  "version": "0.0.0",
+  "description": "Content-addressed identity for an LLM-as-judge evaluator, bound to the human-labeled validation evidence that approved it.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "bin": {
+    "judgelock": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "verify": "node --experimental-strip-types src/cli.ts verify",
+    "validate": "node --experimental-strip-types src/cli.ts validate",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

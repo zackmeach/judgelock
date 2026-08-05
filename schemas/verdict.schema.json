@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zackmeach/judgelock/schemas/verdict.schema.json",
+  "title": "Verdict",
+  "description": "A single judge verdict on one model output. This schema is one of the six evaluator identity components; changing it changes the evaluator id.",
+  "type": "object",
+  "properties": {
+    "label": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "unsupported",
+        "incorrect",
+        "incomplete",
+        "invalid_judge_output"
+      ],
+      "description": "invalid_judge_output is assigned by the harness when a judge response fails to conform to this schema. The judge itself must never emit it."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "standard"]
+    },
+    "evidence": {
+      "type": "string",
+      "description": "Free text: the span or claim the verdict rests on."
+    }
+  },
+  "required": ["label", "severity", "evidence"],
+  "additionalProperties": false
+}

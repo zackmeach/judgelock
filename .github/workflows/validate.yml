@@ -1,0 +1,45 @@
+name: validate
+
+# Manual dispatch only. This job makes real judge API calls and costs money.
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Repeats per case (>1 measures judge self-consistency)
+        required: false
+        default: "1"
+
+permissions:
+  contents: write
+
+# One validation run at a time; two concurrent runs would race on the commit.
+concurrency:
+  group: validate-${{ github.ref }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run validate -- --runs "${{ inputs.runs }}"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # Committed to the branch, not uploaded as an artifact: artifacts expire,
+      # and a validation record has to stay permanently linkable.
+      - name: Commit candidate manifest and report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add validation/
+          git diff --staged --quiet && echo "no changes to commit" && exit 0
+          git commit -m "validate: candidate manifest from run ${{ github.run_id }}"
+          git push

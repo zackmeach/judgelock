@@ -1,0 +1,8 @@
+# Force LF in the index AND the working tree, on every platform.
+#
+# Not cosmetic. The evaluator id is a hash over file contents — rubric.yaml,
+# the judge prompt template, verdict.schema.json. A Windows checkout with CRLF
+# and a Linux CI checkout with LF would hash to different evaluator ids for
+# identical content, so `verify` would fail on line endings and report it as
+# evaluator drift.
+* text=auto eol=lf

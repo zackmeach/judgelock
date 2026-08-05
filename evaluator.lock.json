@@ -1,0 +1,13 @@
+{
+  "evaluator_id": null,
+  "components": {
+    "rubric": null,
+    "judge_prompt_template": null,
+    "model_id": null,
+    "decoding": null,
+    "output_schema": null,
+    "implementation_digest": null
+  },
+  "corpus_hash": null,
+  "locked_at": null
+}

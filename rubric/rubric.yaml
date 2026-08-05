@@ -1,0 +1,35 @@
+# judgelock rubric
+#
+# TODO: write the real criteria. This file is a placeholder with one example.
+#
+# The rubric is one of the six evaluator identity components. Editing anything
+# in this file — including a criterion's wording, its id, or its ordering —
+# changes the evaluator id and invalidates the approved manifest until a new
+# validation run is approved. Comments are part of the hashed bytes; treat
+# whitespace edits as identity changes too.
+#
+# Format
+# ------
+# version:      bumped by hand when criteria change meaningfully. Advisory only;
+#               identity comes from the content hash, not this number.
+# criteria:     ordered list. Each entry:
+#   id:         stable slug, referenced by verdict evidence. Never reuse an id
+#               for a different criterion.
+#   label:      short human name.
+#   applies_to: which verdict labels this criterion can produce.
+#   severity:   critical | standard. Drives the critical-miss metric.
+#   guidance:   the text spliced into the judge prompt template. This is the
+#               operative instruction — write it for a grader, not a reader.
+
+version: 0
+
+criteria:
+  - id: unsupported-claim
+    label: Claim not supported by the docs
+    applies_to: [unsupported]
+    severity: critical
+    guidance: >
+      TODO: example criterion, not final wording. Mark the answer `unsupported`
+      when it states something about the API that the provided documentation
+      does not establish, even if the statement is plausible or true of similar
+      APIs. Quote the unsupported span in `evidence`.
