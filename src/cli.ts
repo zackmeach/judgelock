@@ -2,10 +2,12 @@
 import { parseArgs } from "node:util";
 import { validate } from "./validate.ts";
 import { formatVerifyResult, verify } from "./verify.ts";
+import { runShell } from "./shell/repl.ts";
 
 const USAGE = `judgelock <command> [options]
 
 Commands:
+  shell      Interactive terminal (default when no command is given)
   verify     Offline drift check. No network. Exits nonzero on any mismatch.
   validate   Run the golden set against the judge API and write a candidate
              manifest. Manual dispatch only; never touches the approved manifest.
@@ -28,15 +30,19 @@ const { values, positionals } = parseArgs({
   },
 });
 
-const command = positionals[0];
+const command = positionals[0] ?? "shell";
 const root = values.root ?? ".";
 
-if (values.help || command === undefined) {
+if (values.help) {
   console.log(USAGE);
-  process.exit(command === undefined ? 1 : 0);
+  process.exit(0);
 }
 
 switch (command) {
+  case "shell": {
+    await runShell(root);
+    break;
+  }
   case "verify": {
     const result = verify({ root });
     console.log(formatVerifyResult(result));

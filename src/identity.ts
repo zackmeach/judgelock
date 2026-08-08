@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { EvaluatorConfig, GoldenCase } from "./types.ts";
 
 /**
@@ -11,9 +14,49 @@ import type { EvaluatorConfig, GoldenCase } from "./types.ts";
  * core.autocrlf, or a file fetched by any other route never passes through it.
  * This function is the mechanism; .gitattributes is defense in depth.
  */
-export function normalizeBlob(_text: string): string {
-  throw new Error("not implemented");
+export function normalizeBlob(text: string): string {
+  let out = text;
+  if (out.charCodeAt(0) === 0xfeff) {
+    out = out.slice(1);
+  }
+  return out.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
+
+export function sha256(text: string): string {
+  return createHash("sha256").update(normalizeBlob(text), "utf8").digest("hex");
+}
+
+/** Stable JSON serialization with sorted object keys at every depth. */
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`)
+    .join(",")}}`;
+}
+
+function hashBlob(text: string): string {
+  return sha256(normalizeBlob(text));
+}
+
+function hashJson(value: unknown): string {
+  return sha256(canonicalJson(value));
+}
+
+const EVALUATOR_COMPONENT_ORDER: (keyof EvaluatorConfig)[] = [
+  "rubric",
+  "judge_prompt_template",
+  "model_id",
+  "decoding",
+  "output_schema",
+  "implementation_digest",
+];
 
 /**
  * Hashes the six identity components into one content-addressed evaluator id.
@@ -22,8 +65,12 @@ export function normalizeBlob(_text: string): string {
  * different machines have to produce the same string or the whole scheme
  * is decorative.
  */
-export function computeEvaluatorId(_config: EvaluatorConfig): string {
-  throw new Error("not implemented");
+export function computeEvaluatorId(config: EvaluatorConfig): string {
+  const hashes = componentHashes(config);
+  const combined = EVALUATOR_COMPONENT_ORDER
+    .map((key) => `${key}:${hashes[key]}`)
+    .join("\n");
+  return sha256(combined);
 }
 
 /**
@@ -32,9 +79,16 @@ export function computeEvaluatorId(_config: EvaluatorConfig): string {
  * id changed.
  */
 export function componentHashes(
-  _config: EvaluatorConfig,
+  config: EvaluatorConfig,
 ): Record<keyof EvaluatorConfig, string> {
-  throw new Error("not implemented");
+  return {
+    rubric: hashBlob(config.rubric),
+    judge_prompt_template: hashBlob(config.judge_prompt_template),
+    model_id: hashBlob(config.model_id),
+    decoding: hashJson(config.decoding),
+    output_schema: hashJson(config.output_schema),
+    implementation_digest: hashBlob(config.implementation_digest),
+  };
 }
 
 /**
@@ -42,8 +96,10 @@ export function componentHashes(
  * hashing — so that reordering cases.jsonl is not treated as changing the
  * corpus, while editing, adding, or removing any case is.
  */
-export function computeCorpusHash(_cases: GoldenCase[]): string {
-  throw new Error("not implemented");
+export function computeCorpusHash(cases: GoldenCase[]): string {
+  const sorted = [...cases].sort((a, b) => a.id.localeCompare(b.id));
+  const combined = sorted.map((c) => canonicalJson(c)).join("\n");
+  return sha256(combined);
 }
 
 /**
@@ -60,6 +116,14 @@ export function computeCorpusHash(_cases: GoldenCase[]): string {
  *
  * Blobs go through normalizeBlob before hashing.
  */
-export function computeImplementationDigest(_paths: string[]): string {
-  throw new Error("not implemented");
+export function computeImplementationDigest(
+  root: string,
+  relativePaths: string[],
+): string {
+  const sortedPaths = [...relativePaths].sort();
+  const parts = sortedPaths.map((rel) => {
+    const content = readFileSync(join(root, rel), "utf8");
+    return `${rel}\n${normalizeBlob(content)}`;
+  });
+  return sha256(parts.join("\n---\n"));
 }

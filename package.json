@@ -16,12 +16,15 @@
   "scripts": {
     "verify": "node --experimental-strip-types src/cli.ts verify",
     "validate": "node --experimental-strip-types src/cli.ts validate",
+    "shell": "node --experimental-strip-types src/cli.ts shell",
+    "start": "node --experimental-strip-types src/cli.ts shell",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.test.json",
     "build": "tsc"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
+    "openai": "^7.4.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
