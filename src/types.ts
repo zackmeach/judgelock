@@ -9,12 +9,25 @@ import { z } from "zod";
  * every score taken after it.
  * ------------------------------------------------------------------ */
 
-/** Decoding parameters passed to the judge model. Part of evaluator identity. */
+/**
+ * Decoding parameters passed to the judge model. Part of evaluator identity.
+ *
+ * Optional fields follow one rule: absent means the parameter is not sent and
+ * the provider default applies. An absent key and a present key hash
+ * differently (canonicalJson keeps only present keys), so "we stopped pinning
+ * temperature" is an identity change, as it should be.
+ *
+ * `reasoning_effort` uses OpenAI's effort names; the Anthropic path maps them
+ * to an extended-thinking token budget in provider-chat.ts. Effort moves
+ * verdicts, so it lives here, inside the hashed config — never as an
+ * out-of-band request parameter.
+ */
 export const DecodingConfigSchema = z.object({
-  temperature: z.number().min(0).max(1),
+  temperature: z.number().min(0).max(1).optional(),
   max_tokens: z.number().int().positive(),
   top_p: z.number().min(0).max(1).optional(),
   top_k: z.number().int().positive().optional(),
+  reasoning_effort: z.enum(["minimal", "low", "medium", "high"]).optional(),
   stop_sequences: z.array(z.string()),
 });
 export type DecodingConfig = z.infer<typeof DecodingConfigSchema>;

@@ -1,18 +1,36 @@
 import {
-  describeEvaluatorChat,
-  sendEvaluatorChat,
-  type ChatMessage,
-} from "../evaluator-chat.ts";
+  createAgentSession,
+  describeAgent,
+  sendAgentMessage,
+  type AgentSession,
+} from "../agent.ts";
+import {
+  loadEvaluatorConfig,
+  loadEvaluatorRuntimeConfig,
+} from "../config.ts";
 import { reloadEnvFile } from "../env-file.ts";
+import { callJudge, parseVerdict } from "../judge.ts";
+import type { ChatMessage } from "../provider-chat.ts";
+import type { GoldenCase } from "../types.ts";
 import type { ShellContext } from "./handlers.ts";
 
 async function sendAndPrint(
   ctx: ShellContext,
+  session: AgentSession,
   history: ChatMessage[],
   userMessage: string,
 ): Promise<void> {
   try {
-    const reply = await sendEvaluatorChat(ctx.root, history, userMessage);
+    const reply = await sendAgentMessage(session, history, userMessage, {
+      onToolCall: (event) => {
+        const args = JSON.stringify(event.args);
+        const preview = event.result.length > 120
+          ? `${event.result.slice(0, 120)}...`
+          : event.result;
+        ctx.writeln(`[tool ${event.name} ${args}]`);
+        ctx.writeln(`[tool result ${preview}]`);
+      },
+    });
     history.push({ role: "user", content: userMessage });
     history.push({ role: "assistant", content: reply.content });
     if (reply.content) {
@@ -27,17 +45,64 @@ async function sendAndPrint(
   ctx.writeln("");
 }
 
+async function gradeLastExchange(
+  ctx: ShellContext,
+  history: ChatMessage[],
+): Promise<void> {
+  if (history.length < 2) {
+    ctx.writeln("Nothing to grade yet — ask a question first.");
+    ctx.writeln("");
+    return;
+  }
+
+  const lastAssistant = history.at(-1);
+  const lastUser = history.at(-2);
+  if (
+    lastUser?.role !== "user" ||
+    lastAssistant?.role !== "assistant"
+  ) {
+    ctx.writeln("Could not find a question/answer pair to grade.");
+    ctx.writeln("");
+    return;
+  }
+
+  ctx.writeln("Running judge on the last exchange...");
+  const config = loadEvaluatorConfig(ctx.root);
+  const runtime = loadEvaluatorRuntimeConfig(ctx.root);
+  const testCase: GoldenCase = {
+    id: "chat-interactive",
+    question: lastUser.content,
+    answer: lastAssistant.content,
+    human_label: "pass",
+    human_severity: "standard",
+  };
+
+  try {
+    const { raw } = await callJudge(config, testCase, {
+      provider: runtime.provider,
+    });
+    const verdict = parseVerdict(raw);
+    ctx.writeln(`verdict: ${verdict.label} (${verdict.severity})`);
+    ctx.writeln(`evidence: ${verdict.evidence}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.writeln(`grade error: ${message}`);
+  }
+  ctx.writeln("");
+}
+
 export async function runChatSession(
   ctx: ShellContext,
   initialMessage?: string,
 ): Promise<void> {
   reloadEnvFile(ctx.root);
 
+  let session: AgentSession;
   try {
-    const label = describeEvaluatorChat(ctx.root);
-    ctx.writeln(`Chat with evaluator: ${label}`);
+    session = createAgentSession(ctx.root);
+    ctx.writeln(`Medicare enrollment agent: ${describeAgent(ctx.root)}`);
     ctx.writeln(
-      "Talk to the model configured in evaluator.config.json. Type /exit to return.",
+      "Uses corpus tools (list/read/search). Commands: /grade, /exit",
     );
     ctx.writeln("");
   } catch (err) {
@@ -49,7 +114,7 @@ export async function runChatSession(
   const history: ChatMessage[] = [];
 
   if (initialMessage) {
-    await sendAndPrint(ctx, history, initialMessage);
+    await sendAndPrint(ctx, session, history, initialMessage);
   }
 
   while (true) {
@@ -58,7 +123,11 @@ export async function runChatSession(
       ctx.writeln("Leaving chat.");
       break;
     }
+    if (line === "/grade") {
+      await gradeLastExchange(ctx, history);
+      continue;
+    }
     if (!line) continue;
-    await sendAndPrint(ctx, history, line);
+    await sendAndPrint(ctx, session, history, line);
   }
 }

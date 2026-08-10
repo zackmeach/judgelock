@@ -12,8 +12,8 @@ Commands:
   test api          API integration tests (placeholder)
   test unit         Unit tests (placeholder)
 
-  chat [message]    Talk to the configured evaluator model
-                    (evaluator.config.json). Interactive when no message given.
+  chat [message]    Talk to the Medicare enrollment agent (corpus tools)
+                    /grade judges the last Q&A. /exit leaves chat.
 
   clear             Clear the screen
   status            Show shell status

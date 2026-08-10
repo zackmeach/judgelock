@@ -1,0 +1,9 @@
+{
+  "provider": "anthropic",
+  "model_id": "claude-haiku-4-5-20251001",
+  "decoding": {
+    "max_tokens": 12288,
+    "reasoning_effort": "medium",
+    "stop_sequences": []
+  }
+}

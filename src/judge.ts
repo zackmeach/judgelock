@@ -89,13 +89,18 @@ async function callOpenAiJudge(
   const response = await client.chat.completions.create({
     model: config.model_id,
     messages: [{ role: "user", content: prompt }],
-    temperature: config.decoding.temperature,
     max_completion_tokens: config.decoding.max_tokens,
     ...(config.decoding.top_p !== undefined
       ? { top_p: config.decoding.top_p }
       : {}),
     ...(config.decoding.stop_sequences.length > 0
       ? { stop: config.decoding.stop_sequences }
+      : {}),
+    ...(config.decoding.temperature !== undefined
+      ? { temperature: config.decoding.temperature }
+      : {}),
+    ...(config.decoding.reasoning_effort !== undefined
+      ? { reasoning_effort: config.decoding.reasoning_effort }
       : {}),
     response_format: {
       type: "json_schema",
