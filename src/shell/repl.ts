@@ -8,7 +8,7 @@ import { dispatchLine, type ShellContext } from "./handlers.ts";
 const BANNER = `
   judgelock
   ---------
-  Interactive shell. Type 'help' for commands, or 'chat' to talk to the evaluator.
+  Interactive shell. Type 'help' for commands, or 'chat' to talk to the agent.
 `.trim();
 
 export async function runShell(root: string): Promise<void> {

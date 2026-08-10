@@ -1,9 +1,9 @@
 {
   "provider": "openai",
-  "model_id": "gpt-5.6-luna",
+  "model_id": "gpt-5.4-2026-03-05",
   "decoding": {
-    "temperature": 1,
-    "max_tokens": 1024,
+    "max_tokens": 4096,
+    "reasoning_effort": "medium",
     "stop_sequences": []
   }
 }

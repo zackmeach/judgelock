@@ -15,6 +15,7 @@ import {
 const RUBRIC_PATH = "rubric/rubric.yaml";
 const PROMPT_PATH = "prompts/judge.txt";
 const CONFIG_PATH = "evaluator.config.json";
+const AGENT_CONFIG_PATH = "agent.config.json";
 const SCHEMA_PATH = "schemas/verdict.schema.json";
 const LOCKFILE_PATH = "package-lock.json";
 const SRC_DIR = "src";
@@ -44,6 +45,17 @@ function readJson(path: string): unknown {
  */
 export function loadEvaluatorRuntimeConfig(root: string): EvaluatorRuntimeConfig {
   const raw = readJson(join(root, CONFIG_PATH));
+  return EvaluatorRuntimeConfigSchema.parse(raw);
+}
+
+/**
+ * Runtime wiring for the subject agent — the system under evaluation, a
+ * different instrument from the judge. Its own file so that changing the
+ * agent's model or decoding can never move the evaluator identity, and
+ * vice versa.
+ */
+export function loadAgentRuntimeConfig(root: string): EvaluatorRuntimeConfig {
+  const raw = readJson(join(root, AGENT_CONFIG_PATH));
   return EvaluatorRuntimeConfigSchema.parse(raw);
 }
 
