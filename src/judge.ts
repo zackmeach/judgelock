@@ -139,7 +139,9 @@ async function callOpenAiJudge(
 
   const choice = response.choices[0];
   const raw = choice?.message?.content ?? "";
-  const resolved_model_id = response.model ?? config.model_id;
+  // No fallback to config.model_id: "" makes validate reject the run instead
+  // of recording a served model the API never reported.
+  const resolved_model_id = response.model ?? "";
 
   return { raw, resolved_model_id };
 }

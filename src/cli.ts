@@ -1,12 +1,18 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { loadCorpus, loadEvaluatorRuntimeConfig } from "./config.ts";
+import {
+  APPROVED_MANIFEST_PATH,
+  CASES_PATH,
+  loadCorpus,
+  loadEvaluatorRuntimeConfig,
+} from "./config.ts";
 import { loadEnvFile } from "./env-file.ts";
 import { renderReport, thresholdRows, verdictLine } from "./report.ts";
 import type { Manifest } from "./types.ts";
-import { CASES_PATH, validate } from "./validate.ts";
+import { serializeManifest, validate } from "./validate.ts";
 import { formatVerifyResult, verify } from "./verify.ts";
 import { runShell } from "./shell/repl.ts";
 
@@ -22,10 +28,11 @@ Commands:
 
 Options:
   --root <dir>   Repository root. Default: .
-  --runs <n>     validate only. Repeats per case, integer >= 1. Default: 1
+  --runs <n>     validate only. Repeats per case, 1 to 10. Default: 3
                  The thresholds require self_consistency, which needs >= 2.
   --out <path>   validate only. Candidate manifest path, relative to --root.
                  Default: validation/candidate-manifest.json
+                 Refused if it is validation/approved-manifest.json.
   -h, --help     Show this message.
 `;
 
@@ -33,7 +40,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     root: { type: "string", default: "." },
-    runs: { type: "string", default: "1" },
+    runs: { type: "string", default: "3" },
     out: { type: "string", default: "validation/candidate-manifest.json" },
     help: { type: "boolean", short: "h", default: false },
   },
@@ -58,8 +65,32 @@ switch (command) {
     process.exit(result.ok ? 0 : 1);
   }
   case "validate": {
+    // Failure paths set exitCode and break rather than process.exit: SDK
+    // sockets may still be open, and exiting under them aborts on Windows.
+    const outPath = resolve(root, values.out ?? "validation/candidate-manifest.json");
+    const approvedPath = resolve(root, APPROVED_MANIFEST_PATH);
+    const fold = (p: string): string => (process.platform === "win32" ? p.toLowerCase() : p);
+    if (fold(outPath) === fold(approvedPath)) {
+      console.error(
+        `judgelock validate: --out must not be ${APPROVED_MANIFEST_PATH}; promotion is a reviewed copy in a PR`,
+      );
+      process.exitCode = 1;
+      break;
+    }
+    // ponytail: cap guards a typo'd 10x spend; raise if a larger
+    // self-consistency sample is wanted.
+    const MAX_RUNS = 10;
+    const runsArg = values.runs ?? "3";
+    if (!/^[1-9]\d*$/.test(runsArg) || Number(runsArg) > MAX_RUNS) {
+      console.error(
+        `judgelock validate: --runs must be an integer from 1 to ${MAX_RUNS}, got ${JSON.stringify(runsArg)}`,
+      );
+      process.exitCode = 1;
+      break;
+    }
+    const runs = Number(runsArg);
+
     loadEnvFile(root);
-    const runs = Number(values.runs);
     let manifest: Manifest;
     try {
       manifest = await validate({
@@ -70,12 +101,14 @@ switch (command) {
       });
     } catch (err) {
       console.error(`judgelock validate: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      process.exitCode = 1;
+      break;
     }
 
+    const candidate = serializeManifest(manifest);
+    const candidateSha256 = createHash("sha256").update(candidate, "utf8").digest("hex");
     const generatedAt = new Date();
     const stamp = generatedAt.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-    const outPath = resolve(root, values.out ?? "validation/candidate-manifest.json");
     const reportPath = resolve(
       root,
       "validation",
@@ -88,14 +121,17 @@ switch (command) {
       runs,
       configuredModelId: loadEvaluatorRuntimeConfig(root).model_id,
       generatedAt,
+      candidateSha256,
     });
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, JSON.stringify(manifest, null, 2) + "\n");
+    // Report first: a candidate never exists without the report that describes it.
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, report);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, candidate);
 
     const rows = thresholdRows(manifest);
     console.log(`candidate manifest: ${outPath}`);
+    console.log(`candidate sha256: ${candidateSha256}`);
     console.log(`report: ${reportPath}`);
     for (const r of rows) {
       const value = r.value === undefined ? "absent" : String(r.value);

@@ -1,19 +1,29 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   APPROVED_MANIFEST_PATH,
+  CASES_PATH,
   loadCorpus,
   loadEvaluatorConfig,
+  loadEvaluatorRuntimeConfig,
   loadReferenceDocuments,
   loadThresholds,
 } from "../src/config.ts";
 import type { JudgeResponse } from "../src/judge.ts";
 import { renderReport } from "../src/report.ts";
 import type { GoldenCase, Manifest, Observation, Verdict } from "../src/types.ts";
-import { CASES_PATH, buildManifest, validate, type JudgeFn } from "../src/validate.ts";
+import { buildManifest, serializeManifest, validate, type JudgeFn } from "../src/validate.ts";
 import { verify } from "../src/verify.ts";
 import { ROOT } from "./root.ts";
 
@@ -27,6 +37,9 @@ const INSTRUMENT = [
   "src",
   "validation/thresholds.json",
 ];
+
+/** verify requires resolved_model_id to be the configured (pinned) model_id. */
+const MODEL = loadEvaluatorRuntimeConfig(ROOT).model_id;
 
 /** Synthetic corpus: the suite never depends on the real golden set. */
 const CASES: GoldenCase[] = [
@@ -58,7 +71,7 @@ const honestRaw = (c: GoldenCase): string =>
 /** Fake judge: records every call; `respond` decides the response per case. */
 function fakeJudge(respond: (c: GoldenCase) => Promise<JudgeResponse> | JudgeResponse = (c) => ({
   raw: honestRaw(c),
-  resolved_model_id: "m",
+  resolved_model_id: MODEL,
 })) {
   const calls: { caseId: string; provider: string | undefined }[] = [];
   const judge: JudgeFn = async (_config, _documents, testCase, options) => {
@@ -88,23 +101,27 @@ describe("validate", () => {
       "case-unsupported/0",
       "case-unsupported/1",
     ]);
-    expect(manifest.resolved_model_id).toBe("m");
+    expect(manifest.resolved_model_id).toBe(MODEL);
 
-    writeFileSync(join(dir, APPROVED_MANIFEST_PATH), JSON.stringify(manifest, null, 2) + "\n");
+    writeFileSync(join(dir, APPROVED_MANIFEST_PATH), serializeManifest(manifest));
     const result = verify({ root: dir });
     expect(result.failures).toEqual([]);
     expect(result.ok).toBe(true);
   });
 
-  it("records non-JSON judge output as invalid_judge_output", async () => {
+  it("records non-JSON judge output as invalid_judge_output, byte for byte", async () => {
+    const raw = '  \tnot json\r\n{"label": "pass"}\rtrailing\n  ';
     const { judge } = fakeJudge((c) => ({
-      raw: c.id === "case-standard" ? "not json" : honestRaw(c),
-      resolved_model_id: "m",
+      raw: c.id === "case-standard" ? raw : honestRaw(c),
+      resolved_model_id: MODEL,
     }));
     const manifest = await validate({ root: fixture(), runs: 1, judge });
     const bad = manifest.raw_observations.find((o) => o.case_id === "case-standard")!;
     expect(bad.verdict.label).toBe("invalid_judge_output");
-    expect(bad.raw_judge_response).toBe("not json");
+    expect(bad.raw_judge_response).toBe(raw);
+    // And through the candidate's serialized form.
+    const reread = JSON.parse(serializeManifest(manifest)) as Manifest;
+    expect(reread.raw_observations.find((o) => o.case_id === "case-standard")!.raw_judge_response).toBe(raw);
     expect(manifest.results.invalid_output_rate).toBeGreaterThan(0);
   });
 
@@ -114,7 +131,17 @@ describe("validate", () => {
       resolved_model_id: c.id === "case-unsupported" ? "model-b" : "model-a",
     }));
     await expect(validate({ root: fixture(), runs: 1, judge })).rejects.toThrow(
-      /model-a, model-b/,
+      /"model-a", "model-b"/,
+    );
+  });
+
+  it.each(["", "  \t"])("rejects a response reporting no served model (%j)", async (served) => {
+    const { judge } = fakeJudge((c) => ({
+      raw: honestRaw(c),
+      resolved_model_id: c.id === "case-standard" ? served : MODEL,
+    }));
+    await expect(validate({ root: fixture(), runs: 1, judge })).rejects.toThrow(
+      /reported no served model on case case-standard run 0/,
     );
   });
 
@@ -123,7 +150,7 @@ describe("validate", () => {
     const { judge, calls } = fakeJudge(async (c) => {
       if (c.id === "case-critical") throw new Error("boom");
       await new Promise<void>((r) => pending.push(r));
-      return { raw: honestRaw(c), resolved_model_id: "m" };
+      return { raw: honestRaw(c), resolved_model_id: MODEL };
     });
 
     // Jobs in order: case-pass r0, case-pass r1, case-critical r0, ... (8 total).
@@ -137,6 +164,25 @@ describe("validate", () => {
     for (const release of pending.splice(0)) release();
     for (let i = 0; i < 5; i++) await tick();
     expect(calls).toHaveLength(startedAtFailure);
+  });
+
+  it("a throwing onObservation stops the pool", async () => {
+    const { judge, calls } = fakeJudge();
+    let seen = 0;
+    await expect(
+      validate({
+        root: fixture(),
+        runs: 2,
+        judge,
+        concurrency: 2,
+        onObservation: () => {
+          if (seen++ === 0) throw new Error("observer failed");
+        },
+      }),
+    ).rejects.toThrow("observer failed");
+    for (let i = 0; i < 5; i++) await tick();
+    // Only the two calls in flight when the observer threw; 8 if the pool kept going.
+    expect(calls).toHaveLength(2);
   });
 
   it.each([0, 1.5, Number.NaN, -1])("rejects runs=%s before any judge call", async (runs) => {
@@ -155,7 +201,7 @@ describe("validate", () => {
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((r) => setTimeout(r, 1 + (c.id.length % 4)));
       inFlight--;
-      return { raw: honestRaw(c), resolved_model_id: "m" };
+      return { raw: honestRaw(c), resolved_model_id: MODEL };
     });
     const progress: string[] = [];
     await validate({
@@ -187,7 +233,7 @@ describe("renderReport", () => {
       cases: loadCorpus(join(dir, CASES_PATH)),
       documents: loadReferenceDocuments(dir),
       observations,
-      resolvedModelId: "m",
+      resolvedModelId: MODEL,
       thresholds: loadThresholds(dir),
     });
   }
@@ -202,13 +248,14 @@ describe("renderReport", () => {
       manifest,
       cases: CASES,
       runs: 2,
-      configuredModelId: "gpt-5.4-2026-03-05",
+      configuredModelId: MODEL,
       generatedAt: new Date("2026-10-05T12:00:00Z"),
+      candidateSha256: "c0ffee",
     });
 
   it("renders thresholds, a disagreement with a piped evidence cell, and a split", () => {
     const dir = fixture();
-    const wrong: Verdict = { label: "pass", severity: "standard", evidence: "a | b\nc" };
+    const wrong: Verdict = { label: "pass", severity: "standard", evidence: "a | b\nc\\|d" };
     const manifest = scripted(dir, {
       "case-pass": [honest(byId("case-pass")), honest(byId("case-pass"))],
       "case-critical": [honest(byId("case-critical")), honest(byId("case-critical"))],
@@ -217,12 +264,13 @@ describe("renderReport", () => {
       // Disagrees on run 1 only: a split (and therefore also a disagreement).
       "case-unsupported": [
         honest(byId("case-unsupported")),
-        { label: "incorrect", severity: "critical", evidence: "split evidence" },
+        { label: "incorrect", severity: "critical", evidence: "<script>alert(1)</script>" },
       ],
     });
     const out = render(manifest);
     const lines = out.split("\n");
 
+    expect(out).toContain("- candidate sha256: `c0ffee`");
     expect(out).toContain("| metric | value | bound | result |");
     // agreement 5/8; self_consistency 3/4 (case-unsupported split).
     expect(out).toContain("| agreement | 0.625 | min 0.85 | FAIL |");
@@ -230,10 +278,14 @@ describe("renderReport", () => {
     expect(out).toContain("| self_consistency | 0.75 | min 0.9 | FAIL |");
     expect(out).toContain("**Verdict:** fails 2 threshold(s) — do not promote.");
 
+    // Backslash escaped before the pipe: `c\|d` renders as c\\\|d, not an escaped-escape.
     const row = lines.filter((l) => l.startsWith("| case-standard |"));
-    expect(row).toEqual(["| case-standard | incomplete / standard | pass, pass | a \\| b c |"]);
+    expect(row).toEqual(["| case-standard | incomplete / standard | pass, pass | a \\| b c\\\\\\|d |"]);
     // Four cells: exactly five unescaped pipes.
     expect(row[0]!.split(/(?<!\\)\|/)).toHaveLength(6);
+
+    expect(out).not.toContain("<script>");
+    expect(out).toContain("&lt;script>alert(1)&lt;/script>");
 
     const splits = out.slice(out.indexOf("## Split verdicts"), out.indexOf("## Invalid judge outputs"));
     expect(splits).toContain("| case-unsupported | unsupported / critical | unsupported, incorrect |");
@@ -254,15 +306,52 @@ describe("renderReport", () => {
 });
 
 describe("cli validate", () => {
-  it("--runs 0 exits 1 before any network call and writes no candidate", () => {
-    const dir = fixture();
-    const result = spawnSync(
+  /** Spawns the CLI keyless: no test here may reach the network. */
+  function cli(dir: string, ...args: string[]) {
+    const env: NodeJS.ProcessEnv = { ...process.env, OPENAI_API_KEY: "" };
+    delete env.ANTHROPIC_API_KEY;
+    return spawnSync(
       process.execPath,
-      ["--experimental-strip-types", join(ROOT, "src", "cli.ts"), "validate", "--runs", "0", "--root", dir],
-      { encoding: "utf8" },
+      ["--experimental-strip-types", join(ROOT, "src", "cli.ts"), "validate", "--root", dir, ...args],
+      { encoding: "utf8", env },
     );
+  }
+  const candidate = (dir: string): string => join(dir, "validation", "candidate-manifest.json");
+  const reports = (dir: string): string[] => {
+    const path = join(dir, "validation", "reports");
+    return existsSync(path) ? readdirSync(path) : [];
+  };
+
+  it.each(["0", "11", "0x2", "1.5"])("--runs %s exits 1 before any call and writes nothing", (runs) => {
+    const dir = fixture();
+    const result = cli(dir, "--runs", runs);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("runs must be an integer >= 1, got 0");
-    expect(existsSync(join(dir, "validation", "candidate-manifest.json"))).toBe(false);
+    expect(result.stderr).toContain(`--runs must be an integer from 1 to 10, got "${runs}"`);
+    expect(existsSync(candidate(dir))).toBe(false);
+    expect(reports(dir)).toEqual([]);
+  });
+
+  const approvedSpellings = [
+    "validation/approved-manifest.json",
+    "./validation/../validation/approved-manifest.json",
+    ...(process.platform === "win32" ? ["VALIDATION/Approved-Manifest.JSON"] : []),
+  ];
+  it.each(approvedSpellings)("--out %s is refused before any call", (out) => {
+    const dir = fixture();
+    const result = cli(dir, "--out", out);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--out must not be validation/approved-manifest.json");
+    expect(result.stderr).not.toContain("judge call failed");
+    expect(existsSync(join(dir, APPROVED_MANIFEST_PATH))).toBe(false);
+    expect(reports(dir)).toEqual([]);
+  });
+
+  it("without an API key exits 1 and writes no candidate or report", () => {
+    const dir = fixture();
+    const result = cli(dir, "--runs", "2");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("OPENAI_API_KEY is not set");
+    expect(existsSync(candidate(dir))).toBe(false);
+    expect(reports(dir)).toEqual([]);
   });
 });

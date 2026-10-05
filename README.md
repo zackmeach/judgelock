@@ -16,7 +16,7 @@ The judge here grades answers from a Medicare enrollment Q&A agent against refer
 | --- | --- |
 | `rubric` | `rubric/rubric.yaml` |
 | `judge_prompt_template` | `prompts/judge.txt`, placeholders unsubstituted |
-| `model_id` | `evaluator.config.json`: the configured id, before any server-side resolution |
+| `model_id` | `evaluator.config.json`: a pinned, dated snapshot id, never an alias |
 | `decoding` | `evaluator.config.json`: `max_tokens`, `reasoning_effort`, stop sequences, and any pinned `temperature` / `top_p` / `top_k` |
 | `output_schema` | `schemas/verdict.schema.json` |
 | `implementation_digest` | sha256 over the scoring-path sources `src/config.ts`, `src/identity.ts`, `src/judge.ts`, `src/types.ts`, `src/validate.ts`, plus `package-lock.json` |
@@ -29,7 +29,7 @@ Deliberately outside the digest:
 
 An import-closure test in `tests/identity.test.ts` fails if a digested file references a relative module that is neither digested nor allowlisted with a reason (today: `src/env-file.ts`, `src/corpus-docs.ts`), or loads a module in a way a string scan cannot resolve.
 
-What the API reports actually serving is recorded in the manifest as `resolved_model_id`. It is a separate fact from the configured `model_id` and not part of the identity.
+What the API reports actually serving is recorded in the manifest as `resolved_model_id`. verify requires it to hash to the manifest's `model_id` component, i.e. to be exactly the configured snapshot id, so an alias the API resolves to some other string can never be approved.
 
 ### Corpus hash
 
@@ -63,13 +63,13 @@ Bounds are inclusive: `min` passes at value ≥ bound, `max` at value ≤ bound.
 
 ### verify
 
-`npm run verify` is the CI gate: offline, deterministic, no secrets. It recomputes the evaluator id and corpus hash from the working tree, reads `validation/approved-manifest.json`, recomputes the metrics from its raw observations, and fails on any of:
+`npm run verify` is the CI gate: offline, deterministic, no secrets. It recomputes the evaluator id and corpus hash from the working tree, reads `validation/approved-manifest.json`, recomputes the metrics from its raw observations, and fails on any of the following. The approved manifest must be in canonical form: byte for byte what `validate` writes (`serializeManifest`), BOM and line endings aside, with observations in canonical order. That way the text a reviewer reads is exactly the evidence verify enforces.
 
 - `evaluator_id_mismatch`: an identity component differs from the approved one, named per component
 - `corpus_hash_mismatch`: a case or reference document changed
 - `results_mismatch`: a metric stated in the manifest disagrees with the recomputation, named per metric
 - `threshold_violation`: a recomputed metric violates its threshold or was not computed
-- `manifest_invalid`: no approved manifest, or one that does not parse; an `evaluator_id` that is not the combination of its stated components; thresholds or `threshold_source` that differ from `validation/thresholds.json`; a stated verdict that a reparse of its raw judge response does not reproduce; observations that do not cover the current cases exactly
+- `manifest_invalid`: no approved manifest, or one that does not parse; a manifest not in canonical form (hand edits, duplicate keys, unknown fields, reordered keys or observations), which stops all further checks; an `evaluator_id` that is not the combination of its stated components; a `resolved_model_id` that is not the model the `model_id` component was hashed from; thresholds or `threshold_source` that differ from `validation/thresholds.json`; a stated verdict that a reparse of its raw judge response does not reproduce; observations that do not cover the current cases exactly
 
 ## Workflow
 
@@ -81,9 +81,9 @@ Bounds are inclusive: `min` passes at value ≥ bound, `max` at value ≤ bound.
    npm run validate -- --runs 3
    ```
 
-   It writes `validation/candidate-manifest.json` and a report at `validation/reports/<UTC timestamp>-<first 12 of evaluator_id>.md`, and prints each threshold's PASS/FAIL with an overall verdict. It exits 0 whenever a candidate was produced, even one that fails thresholds. It exits 1 and writes nothing if `--runs` is not an integer ≥ 1, if any judge call fails after the SDK's retries, or if the API served more than one model during the run. The manual-dispatch `validate` GitHub Actions workflow does the same run (default 3 runs) and commits the candidate and report to the branch.
-4. Review the candidate and the report: thresholds, disagreements with the human labels, cases whose runs disagree with each other, invalid judge outputs.
-5. Promote in a pull request by copying the candidate over the approved manifest. Promotion is always a human act in a reviewed PR; no command writes `validation/approved-manifest.json`.
+   `--runs` defaults to 3 and is capped at 10. The run writes a report at `validation/reports/<UTC timestamp>-<first 12 of evaluator_id>.md`, then `validation/candidate-manifest.json`, and prints the candidate's sha256, each threshold's PASS/FAIL, and an overall verdict. It exits 0 whenever a candidate was produced, even one that fails thresholds. It exits nonzero and writes nothing if `--runs` is not an integer from 1 to 10, if `--out` is the approved manifest, if any judge call fails after the SDK's retries, if a response reports no served model, or if the API served more than one model during the run. The manual-dispatch `validate` GitHub Actions workflow does the same run (default 3 runs) and commits the candidate and report to the branch.
+4. Review the candidate and the report: thresholds, disagreements with the human labels, cases whose runs disagree with each other, invalid judge outputs. The report's `candidate sha256` is over the candidate file's exact bytes, so `sha256sum` or `Get-FileHash` on the candidate must match it.
+5. Promote in a pull request by copying the candidate over the approved manifest. Promotion is always a human act in a reviewed PR: `validate` refuses an `--out` that resolves to `validation/approved-manifest.json`, and no other command writes it.
 
    ```bash
    cp validation/candidate-manifest.json validation/approved-manifest.json
@@ -142,7 +142,7 @@ src/
 tests/
   identity.test.ts             hashing, normalization, digest scope, import closure
   judge.test.ts                prompt rendering, document rendering, verdict parsing
-  validate.test.ts             validate with fake judges, report rendering, CLI runs check
+  validate.test.ts             validate with fake judges, report rendering, CLI refusals (keyless)
   mutation/verify.test.ts      deliberate-drift tests for verify
   agent-tools.test.ts          agent corpus tools
   health.test.ts               bootstrap checks

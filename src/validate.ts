@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import {
+  CASES_PATH,
   THRESHOLDS_PATH,
   loadCorpus,
   loadEvaluatorConfig,
@@ -25,8 +26,6 @@ import {
   type ThresholdsFile,
   type VerdictLabel,
 } from "./types.ts";
-
-export const CASES_PATH = "corpus/cases.jsonl";
 
 /** One judge call. Tests inject a fake; the default is callJudge. */
 export type JudgeFn = typeof callJudge;
@@ -221,8 +220,9 @@ export function buildManifest(input: BuildManifestInput): Manifest {
  * metric, not an error). A judge call that rejects (after the SDK's own
  * retries) aborts the run: no new calls are started, calls already in flight
  * are discarded, and the returned promise rejects naming the case and run.
- * The run also rejects if the API reported serving more than one model —
- * evidence spanning two models describes neither.
+ * A throwing onObservation aborts the same way. The run also rejects if a
+ * response reports no served model, or if the API reported serving more than
+ * one model — evidence spanning two models describes neither.
  */
 export async function validate(opts: ValidateOptions): Promise<Manifest> {
   // ponytail: fixed pool of 4, no adaptive rate limiting; the OpenAI SDK's
@@ -250,20 +250,20 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
   let next = 0;
   let failed = false;
 
-  const worker = async (): Promise<void> => {
-    while (!failed && next < jobs.length) {
-      const { testCase, run_index } = jobs[next++]!;
+  const runJob = async ({ testCase, run_index }: (typeof jobs)[number]): Promise<void> => {
+    const where = `case ${testCase.id} run ${run_index}`;
+    try {
       let response: JudgeResponse;
       try {
         response = await judge(config, documents, testCase, { provider });
       } catch (err) {
-        failed = true;
         const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`judge call failed on case ${testCase.id} run ${run_index}: ${message}`, {
-          cause: err,
-        });
+        throw new Error(`judge call failed on ${where}: ${message}`, { cause: err });
       }
       if (failed) return;
+      if (response.resolved_model_id.trim() === "") {
+        throw new Error(`judge API reported no served model on ${where}`);
+      }
       resolvedModelIds.add(response.resolved_model_id);
       const observation: Observation = {
         case_id: testCase.id,
@@ -273,13 +273,22 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
       };
       observations.push(observation);
       opts.onObservation?.(observation, observations.length, jobs.length);
+    } catch (err) {
+      // Any throw, including onObservation's, stops the pool before it propagates.
+      failed = true;
+      throw err;
     }
+  };
+  const worker = async (): Promise<void> => {
+    while (!failed && next < jobs.length) await runJob(jobs[next++]!);
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
 
   const served = [...resolvedModelIds].sort(compareCodeUnits);
   if (served.length !== 1) {
-    throw new Error(`judge API served more than one model during the run: ${served.join(", ")}`);
+    throw new Error(
+      `judge API served more than one model during the run: ${served.map((id) => JSON.stringify(id)).join(", ")}`,
+    );
   }
   return buildManifest({
     config,

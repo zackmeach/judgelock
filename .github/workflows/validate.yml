@@ -29,8 +29,11 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run validate -- --runs "${{ inputs.runs }}"
+      # The input reaches the shell only as an env var; inlining it would be
+      # shell injection with a token that can push to the branch.
+      - run: npm run validate -- --runs "$RUNS"
         env:
+          RUNS: ${{ inputs.runs }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 

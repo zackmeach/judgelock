@@ -7,6 +7,8 @@ export interface ReportInput {
   runs: number;
   configuredModelId: string;
   generatedAt: Date;
+  /** sha256 of the exact candidate manifest bytes this report describes. */
+  candidateSha256: string;
 }
 
 export interface ThresholdRow {
@@ -34,14 +36,14 @@ export function verdictLine(rows: ThresholdRow[]): string {
 }
 
 /**
- * One Markdown table cell: whitespace collapsed, truncated, pipes escaped,
- * `<` escaped so raw judge text cannot render as HTML.
+ * One Markdown table cell: whitespace collapsed, truncated, backslashes then
+ * pipes escaped, `<` escaped so raw judge text cannot render as HTML.
  */
 function cell(text: string, max = 300): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length === 0) return "(empty)";
   const cut = flat.length > max ? `${flat.slice(0, max)}…` : flat;
-  return cut.replace(/\|/g, "\\|").replace(/</g, "&lt;");
+  return cut.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/</g, "&lt;");
 }
 
 function table(header: string[], rows: string[][]): string[] {
@@ -60,6 +62,7 @@ export function renderReport({
   runs,
   configuredModelId,
   generatedAt,
+  candidateSha256,
 }: ReportInput): string {
   const labels = (obs: Observation[]): string => obs.map((o) => o.verdict.label).join(", ");
 
@@ -88,6 +91,7 @@ export function renderReport({
     "",
     `Generated ${generatedAt.toISOString()}.`,
     "",
+    `- candidate sha256: \`${candidateSha256}\``,
     `- evaluator_id: \`${manifest.evaluator_id}\``,
     `- corpus_hash: \`${manifest.corpus_hash}\``,
     `- model: configured \`${configuredModelId}\`, resolved \`${manifest.resolved_model_id}\``,
