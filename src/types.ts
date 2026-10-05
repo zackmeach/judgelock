@@ -49,7 +49,13 @@ export const EvaluatorConfigSchema = z.object({
   decoding: DecodingConfigSchema,
   /** Verbatim contents of schemas/verdict.schema.json. */
   output_schema: z.unknown(),
-  /** sha256 over the scoring module source plus the dependency lockfile. */
+  /**
+   * sha256 over the scoring-path sources plus the dependency lockfile.
+   * src/corpus-docs.ts is deliberately excluded: its effect on judge input is
+   * already captured by corpus_hash over the loaded doc content. Agent, shell,
+   * verify, and cli code is excluded so subject-agent edits never move
+   * evaluator identity.
+   */
   implementation_digest: z.string(),
 });
 export type EvaluatorConfig = z.infer<typeof EvaluatorConfigSchema>;
@@ -90,6 +96,12 @@ export const GoldenCaseSchema = z.object({
   notes: z.string().optional(),
 });
 export type GoldenCase = z.infer<typeof GoldenCaseSchema>;
+
+/** One corpus/docs file as the judge sees it: filename plus normalized content. */
+export interface ReferenceDocument {
+  filename: string;
+  content: string;
+}
 
 /**
  * One case, one run. The manifest keeps every one of these so that

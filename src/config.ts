@@ -1,6 +1,7 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { listCorpusDocFiles, readCorpusDocument } from "./corpus-docs.ts";
 import { computeImplementationDigest } from "./identity.ts";
 import {
   DecodingConfigSchema,
@@ -8,6 +9,7 @@ import {
   GoldenCaseSchema,
   type EvaluatorConfig,
   type GoldenCase,
+  type ReferenceDocument,
 } from "./types.ts";
 
 const RUBRIC_PATH = "rubric/rubric.yaml";
@@ -15,8 +17,22 @@ const PROMPT_PATH = "prompts/judge.txt";
 const CONFIG_PATH = "evaluator.config.json";
 const AGENT_CONFIG_PATH = "agent.config.json";
 const SCHEMA_PATH = "schemas/verdict.schema.json";
-const LOCKFILE_PATH = "package-lock.json";
-const SRC_DIR = "src";
+
+/**
+ * Files behind implementation_digest: the scoring path plus the lockfile.
+ * src/corpus-docs.ts is deliberately excluded — its effect on judge input is
+ * already captured by corpus_hash over the loaded doc content. Agent, shell,
+ * verify, and cli code is excluded so subject-agent edits never move
+ * evaluator identity. A missing file throws.
+ */
+export const IMPLEMENTATION_DIGEST_PATHS = [
+  "src/config.ts",
+  "src/identity.ts",
+  "src/judge.ts",
+  "src/types.ts",
+  "src/validate.ts",
+  "package-lock.json",
+];
 
 export const ProviderSchema = z.enum(["openai", "anthropic"]);
 export type Provider = z.infer<typeof ProviderSchema>;
@@ -61,9 +77,9 @@ export function loadAgentRuntimeConfig(root: string): EvaluatorRuntimeConfig {
  * Reads the six identity components off disk — rubric/rubric.yaml, the judge
  * prompt template, the configured model id and decoding config, and
  * schemas/verdict.schema.json — and computes the implementation digest over
- * the scoring module plus the lockfile. Validates against EvaluatorConfigSchema.
- * Throws rather than defaulting: a missing component is a broken evaluator,
- * not a zero value.
+ * IMPLEMENTATION_DIGEST_PATHS (scoring path only, plus the lockfile).
+ * Validates against EvaluatorConfigSchema. Throws rather than defaulting: a
+ * missing component is a broken evaluator, not a zero value.
  */
 export function loadEvaluatorConfig(root: string): EvaluatorConfig {
   const rubric = readUtf8(join(root, RUBRIC_PATH));
@@ -71,14 +87,9 @@ export function loadEvaluatorConfig(root: string): EvaluatorConfig {
   const runtime = loadEvaluatorRuntimeConfig(root);
   const output_schema = readJson(join(root, SCHEMA_PATH));
 
-  const srcRelativePaths = readdirSync(join(root, SRC_DIR))
-    .filter((name) => name.endsWith(".ts"))
-    .sort()
-    .map((name) => join(SRC_DIR, name));
-  const digestRelativePaths = [...srcRelativePaths, LOCKFILE_PATH];
   const implementation_digest = computeImplementationDigest(
     root,
-    digestRelativePaths,
+    IMPLEMENTATION_DIGEST_PATHS,
   );
 
   return EvaluatorConfigSchema.parse({
@@ -89,6 +100,22 @@ export function loadEvaluatorConfig(root: string): EvaluatorConfig {
     output_schema,
     implementation_digest,
   });
+}
+
+/**
+ * Loads every corpus/docs/*.md, sorted by filename, content normalized. These
+ * are what the judge grades against. Throws on zero docs: a judge with no
+ * reference documents cannot rule anything unsupported.
+ */
+export function loadReferenceDocuments(root: string): ReferenceDocument[] {
+  const documents = listCorpusDocFiles(root).map((filename) => ({
+    filename,
+    content: readCorpusDocument(root, filename),
+  }));
+  if (documents.length === 0) {
+    throw new Error("no reference documents found in corpus/docs");
+  }
+  return documents;
 }
 
 /**

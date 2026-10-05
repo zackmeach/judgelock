@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { EvaluatorConfig, GoldenCase } from "./types.ts";
+import type {
+  EvaluatorConfig,
+  GoldenCase,
+  ReferenceDocument,
+} from "./types.ts";
 
 /**
  * Canonicalizes a blob before it is hashed: CRLF and lone CR to LF, UTF-8 BOM
@@ -92,20 +96,41 @@ export function componentHashes(
 }
 
 /**
- * Hashes the golden set. Order-independent — sorted by case id before
- * hashing — so that reordering cases.jsonl is not treated as changing the
- * corpus, while editing, adding, or removing any case is.
+ * Hashes everything the judge grades: the golden set and the reference
+ * documents spliced into the prompt. Order-independent — cases sorted by id,
+ * documents by filename — so that reordering cases.jsonl or listing docs in a
+ * different order is not treated as changing the corpus, while editing,
+ * adding, or removing any case or document is.
+ *
+ * Document content goes through normalizeBlob here rather than trusting the
+ * caller: canonicalJson escapes `\r` inside strings, so the final sha256
+ * normalization cannot undo a CRLF in content.
  */
-export function computeCorpusHash(cases: GoldenCase[]): string {
-  const sorted = [...cases].sort((a, b) => a.id.localeCompare(b.id));
-  const combined = sorted.map((c) => canonicalJson(c)).join("\n");
-  return sha256(combined);
+export function computeCorpusHash(
+  cases: GoldenCase[],
+  documents: ReferenceDocument[],
+): string {
+  const sortedCases = [...cases].sort((a, b) => a.id.localeCompare(b.id));
+  const sortedDocuments = documents
+    .map((doc) => ({ filename: doc.filename, content: normalizeBlob(doc.content) }))
+    // Code-unit order, not localeCompare: the hash must not depend on the
+    // machine's ICU locale. Matches listCorpusDocFiles' .sort().
+    .sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
+  return sha256(
+    canonicalJson({ cases: sortedCases, documents: sortedDocuments }),
+  );
 }
 
 /**
- * sha256 over the scoring module source plus the dependency lockfile. Catches
+ * sha256 over the scoring-path sources plus the dependency lockfile. Catches
  * the case where the rubric and prompt are untouched but the code that turns
  * a judge response into a score changed underneath them.
+ *
+ * Scoring path only (IMPLEMENTATION_DIGEST_PATHS in config.ts).
+ * src/corpus-docs.ts is deliberately excluded: its effect on judge input is
+ * already captured by corpus_hash over the loaded doc content. Agent, shell,
+ * verify, and cli code is excluded so subject-agent edits never move
+ * evaluator identity.
  *
  * Hashes the .ts sources under src/, never the built dist/ output. This is
  * settled, not a preference: the .ts files are what the repo stores, what a

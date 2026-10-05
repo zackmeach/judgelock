@@ -4,6 +4,7 @@ import { OPENAI_ENV_KEY, requireEnv } from "./env-file.ts";
 import type {
   EvaluatorConfig,
   GoldenCase,
+  ReferenceDocument,
   Verdict,
 } from "./types.ts";
 import { VerdictSchema } from "./types.ts";
@@ -39,15 +40,35 @@ function inferProvider(modelId: string): Provider {
   );
 }
 
-function renderPrompt(
-  template: string,
-  rubric: string,
-  testCase: GoldenCase,
-): string {
-  return template
-    .replace(/\{\{rubric\}\}/g, rubric)
-    .replace(/\{\{question\}\}/g, testCase.question)
-    .replace(/\{\{answer\}\}/g, testCase.answer);
+const PROMPT_PLACEHOLDERS = ["rubric", "documents", "question", "answer"] as const;
+export type PromptValues = Record<(typeof PROMPT_PLACEHOLDERS)[number], string>;
+
+/**
+ * Substitutes every `{{name}}` in one pass. A function replacement means `$`
+ * sequences in inserted text are literal, and inserted text is never
+ * re-scanned, so a question containing `{{answer}}` stays literal. Throws on
+ * an unknown placeholder, and on a template missing any of the four: a
+ * template without `{{documents}}` would silently grade without the docs.
+ */
+export function renderPrompt(template: string, values: PromptValues): string {
+  for (const key of PROMPT_PLACEHOLDERS) {
+    if (!template.includes(`{{${key}}}`)) {
+      throw new Error(`judge prompt template is missing {{${key}}}`);
+    }
+  }
+  return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
+    if (!(PROMPT_PLACEHOLDERS as readonly string[]).includes(key)) {
+      throw new Error(`judge prompt template has unknown placeholder {{${key}}}`);
+    }
+    return values[key as keyof PromptValues];
+  });
+}
+
+/** Renders reference documents for `{{documents}}`, in the given order. */
+export function renderDocuments(documents: ReferenceDocument[]): string {
+  return documents
+    .map((doc) => `### ${doc.filename}\n\n${doc.content}`)
+    .join("\n\n---\n\n");
 }
 
 /** Schema sent to the judge API — harness-owned labels are excluded. */
@@ -67,14 +88,16 @@ function judgeOutputSchema(outputSchema: unknown): Record<string, unknown> {
 
 async function callOpenAiJudge(
   config: EvaluatorConfig,
+  documents: ReferenceDocument[],
   testCase: GoldenCase,
 ): Promise<JudgeResponse> {
   const client = new OpenAI({ apiKey: requireEnv(OPENAI_ENV_KEY) });
-  const prompt = renderPrompt(
-    config.judge_prompt_template,
-    config.rubric,
-    testCase,
-  );
+  const prompt = renderPrompt(config.judge_prompt_template, {
+    rubric: config.rubric,
+    documents: renderDocuments(documents),
+    question: testCase.question,
+    answer: testCase.answer,
+  });
 
   const response = await client.chat.completions.create({
     model: config.model_id,
@@ -110,12 +133,13 @@ async function callOpenAiJudge(
 }
 
 /**
- * Renders the judge prompt template against one case and calls the configured
- * provider API with the configured model and decoding config. The only place
- * in the codebase that touches the network.
+ * Renders the judge prompt template against one case and the reference
+ * documents and calls the configured provider API with the configured model
+ * and decoding config. The only place in the codebase that touches the network.
  */
 export async function callJudge(
   config: EvaluatorConfig,
+  documents: ReferenceDocument[],
   testCase: GoldenCase,
   options?: JudgeCallOptions,
 ): Promise<JudgeResponse> {
@@ -123,7 +147,7 @@ export async function callJudge(
 
   switch (provider) {
     case "openai":
-      return callOpenAiJudge(config, testCase);
+      return callOpenAiJudge(config, documents, testCase);
     case "anthropic":
       throw new Error("anthropic judge calls are not implemented yet");
     default: {
