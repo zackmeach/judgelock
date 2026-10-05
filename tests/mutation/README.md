@@ -15,16 +15,24 @@ What the suite pins:
   each edit yields exactly one `evaluator_id_mismatch` naming that component.
 - Agent code edit, rubric rewritten with CRLF + BOM: no failure.
 - Case or reference-doc edit: `corpus_hash_mismatch`.
-- Stated results that disagree with a recomputation: `results_mismatch` naming
-  the metric.
-- Stated verdict that a reparse of its raw judge response does not reproduce:
-  `manifest_invalid` naming the case.
+- Stated results that disagree with a recomputation, including an extra stated
+  metric: `results_mismatch` naming the metric.
+- Stated verdict that a reparse of its raw judge response does not reproduce,
+  pinned separately for label, severity and evidence: `manifest_invalid`
+  naming the case.
 - Honest results below the gate (a critical miss): `threshold_violation`
-  naming the metric.
+  naming the metric. Gating uses validation/thresholds.json, so a manifest
+  that loosens its own copy still gets the violation (plus `manifest_invalid`).
 - Single-run evidence: `threshold_violation` on the absent self_consistency.
 - Manifest thresholds differing from validation/thresholds.json, or a
   different threshold_source: `manifest_invalid`.
 - Missing or schema-invalid manifest: exactly one `manifest_invalid`.
+- Manifest not in canonical form (duplicate key, `__proto__` key, extra field,
+  `-0`, reordered keys, observations out of order): exactly one
+  `manifest_invalid`. A CRLF + BOM copy of a canonical manifest passes.
+- resolved_model_id that is not the model the manifest's model_id component
+  was hashed from (a re-stamped model swap, or empty): `manifest_invalid` on
+  resolved_model_id.
 - A case with no observations: `manifest_invalid` naming the case.
 - evaluator_components that do not combine to evaluator_id: `manifest_invalid`
   plus the component mismatch (or a generic `evaluator_id_mismatch` when only

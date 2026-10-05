@@ -19,6 +19,7 @@ const PROMPT_PATH = "prompts/judge.txt";
 const CONFIG_PATH = "evaluator.config.json";
 const AGENT_CONFIG_PATH = "agent.config.json";
 const SCHEMA_PATH = "schemas/verdict.schema.json";
+export const CASES_PATH = "corpus/cases.jsonl";
 export const THRESHOLDS_PATH = "validation/thresholds.json";
 export const APPROVED_MANIFEST_PATH = "validation/approved-manifest.json";
 

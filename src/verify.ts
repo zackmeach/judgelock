@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   APPROVED_MANIFEST_PATH,
+  CASES_PATH,
   THRESHOLDS_PATH,
   loadCorpus,
   loadEvaluatorConfig,
@@ -14,6 +15,8 @@ import {
   combineComponentHashes,
   componentHashes,
   computeCorpusHash,
+  hashBlob,
+  normalizeBlob,
 } from "./identity.ts";
 import { parseVerdict } from "./judge.ts";
 import {
@@ -25,9 +28,12 @@ import {
   type VerifyFailure,
   type VerifyResult,
 } from "./types.ts";
-import { checkCoverage, computeResults } from "./validate.ts";
-
-const CASES_PATH = "corpus/cases.jsonl";
+import {
+  checkCoverage,
+  compareObservations,
+  computeResults,
+  serializeManifest,
+} from "./validate.ts";
 
 export interface VerifyOptions {
   root: string;
@@ -78,9 +84,12 @@ export function checkThresholds(
  * checks the recomputed metrics against validation/thresholds.json.
  *
  * Fails on any of: no approved manifest, or one that does not parse; a
+ * manifest not in canonical form (exactly serializeManifest's output, with
+ * observations in canonical order), which stops all further checks; a
  * manifest whose evaluator_id is not the combination of its stated
- * components; any identity component differing from the approved one (named
- * per component); the corpus hash differing; manifest thresholds differing
+ * components; a resolved_model_id that is not the model the model_id
+ * component was hashed from; any identity component differing from the
+ * approved one (named per component); the corpus hash differing; manifest thresholds differing
  * from validation/thresholds.json; a stated verdict that a reparse of its raw
  * judge response does not reproduce; observations not covering the current
  * cases exactly; stated results disagreeing with a recomputation; or a
@@ -112,9 +121,12 @@ export function verify({ root }: VerifyOptions): VerifyResult {
     });
     return result();
   }
+  // BOM and line endings are normalized; every other byte must be canonical.
+  let text: string;
   let manifest: Manifest;
   try {
-    manifest = ManifestSchema.parse(JSON.parse(readFileSync(manifestPath, "utf8")));
+    text = normalizeBlob(readFileSync(manifestPath, "utf8"));
+    manifest = ManifestSchema.parse(JSON.parse(text));
   } catch (err) {
     const message =
       err instanceof z.ZodError ? z.prettifyError(err) : (err as Error).message;
@@ -125,11 +137,41 @@ export function verify({ root }: VerifyOptions): VerifyResult {
     return result();
   }
 
+  // JSON.parse keeps the last duplicate key and zod drops unknown fields and
+  // `__proto__`, so a manifest that only parses can say more than verify checks.
+  if (text !== serializeManifest(manifest)) {
+    failures.push({
+      kind: "manifest_invalid",
+      detail:
+        "approved manifest is not in canonical form (re-serialize the candidate with validate; hand edits, duplicate keys, unknown fields and key reordering are rejected)",
+    });
+    return result();
+  }
+  const observations = manifest.raw_observations;
+  if (observations.some((o, i) => i > 0 && compareObservations(observations[i - 1]!, o) > 0)) {
+    failures.push({
+      kind: "manifest_invalid",
+      detail:
+        "approved manifest raw_observations are not in canonical order (case_id by code unit, then run_index)",
+    });
+    return result();
+  }
+
   const stated = combineComponentHashes(manifest.evaluator_components);
   if (stated !== manifest.evaluator_id) {
     failures.push({
       kind: "manifest_invalid",
       detail: `manifest evaluator_id ${manifest.evaluator_id} is not the combination of its evaluator_components (${stated})`,
+    });
+  }
+
+  // Compared to the manifest's own model_id component, not the working tree's:
+  // a working-tree model change is already reported as the model_id component.
+  if (hashBlob(manifest.resolved_model_id) !== manifest.evaluator_components.model_id) {
+    failures.push({
+      kind: "manifest_invalid",
+      subject: "resolved_model_id",
+      detail: `resolved_model_id ${JSON.stringify(manifest.resolved_model_id)} is not the model the manifest's model_id component was hashed from`,
     });
   }
 
@@ -186,7 +228,7 @@ export function verify({ root }: VerifyOptions): VerifyResult {
       failures.push({
         kind: "manifest_invalid",
         subject: o.case_id,
-        detail: `case ${o.case_id} run ${o.run_index}: stated verdict ${JSON.stringify(o.verdict)} is not what raw_judge_response parses to (${JSON.stringify(reparsed)})`,
+        detail: `case ${JSON.stringify(o.case_id)} run ${o.run_index}: stated verdict ${JSON.stringify(o.verdict)} is not what raw_judge_response parses to (${JSON.stringify(reparsed)})`,
       });
     }
   }

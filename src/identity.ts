@@ -45,7 +45,7 @@ export function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-function hashBlob(text: string): string {
+export function hashBlob(text: string): string {
   return sha256(normalizeBlob(text));
 }
 

@@ -92,7 +92,8 @@ export const GoldenCaseSchema = z.object({
   question: z.string(),
   /** The model output being graded. */
   answer: z.string(),
-  human_label: VerdictLabelSchema,
+  /** invalid_judge_output is harness-assigned; a human label never uses it. */
+  human_label: VerdictLabelSchema.exclude(["invalid_judge_output"]),
   human_severity: SeveritySchema,
   notes: z.string().optional(),
 });
