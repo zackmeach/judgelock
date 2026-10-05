@@ -7,12 +7,11 @@ Gives an LLM-as-judge evaluator one content-addressed identity, binds it to the 
 ## Layout
 
 ```
-docs/                          fictional elections-data API under evaluation
+corpus/docs/                   Medicare enrollment reference docs
 rubric/rubric.yaml             grading criteria
 corpus/cases.jsonl             human-labeled golden set
 schemas/verdict.schema.json    judge output contract
 validation/
-  approved-manifest.json       the evidence CI checks against
   reports/                     permanently linkable validation reports
 src/
   cli.ts                       verify | validate dispatch
@@ -23,5 +22,4 @@ src/
   verify.ts                    offline drift check
   types.ts                     shared types and schemas
 tests/mutation/                deliberate-drift tests
-evaluator.lock.json            the locked evaluator identity
 ```

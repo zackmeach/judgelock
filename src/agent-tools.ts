@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import {
   listCorpusDocFiles,
   readCorpusDocument,
@@ -13,61 +12,57 @@ export const AGENT_TOOL_NAMES = [
 
 export type AgentToolName = (typeof AGENT_TOOL_NAMES)[number];
 
-/** OpenAI Chat Completions tool definitions for the subject agent. */
-export const OPENAI_AGENT_TOOLS: OpenAI.Chat.ChatCompletionTool[] = [
+export interface AgentToolDefinition {
+  name: AgentToolName;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
-    type: "function",
-    function: {
-      name: "list_documents",
-      description:
-        "List the Medicare enrollment documents available in the corpus.",
-      parameters: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
+    name: "list_documents",
+    description:
+      "List the Medicare enrollment documents available in the corpus.",
+    parameters: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
     },
   },
   {
-    type: "function",
-    function: {
-      name: "read_document",
-      description:
-        "Read the full text of one corpus document by filename (e.g. 01-when-coverage-starts.md).",
-      parameters: {
-        type: "object",
-        properties: {
-          filename: {
-            type: "string",
-            description: "Corpus markdown filename under corpus/docs.",
-          },
+    name: "read_document",
+    description:
+      "Read the full text of one corpus document by filename (e.g. 01-when-coverage-starts.md).",
+    parameters: {
+      type: "object",
+      properties: {
+        filename: {
+          type: "string",
+          description: "Corpus markdown filename under corpus/docs.",
         },
-        required: ["filename"],
-        additionalProperties: false,
       },
+      required: ["filename"],
+      additionalProperties: false,
     },
   },
   {
-    type: "function",
-    function: {
-      name: "search_documents",
-      description:
-        "Search corpus documents for a query string. Returns matching line snippets.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description: "Text to search for (case-insensitive).",
-          },
-          limit: {
-            type: "integer",
-            description: "Maximum number of matches to return (default 5).",
-          },
+    name: "search_documents",
+    description:
+      "Search corpus documents for a query string. Returns matching line snippets.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Text to search for (case-insensitive).",
         },
-        required: ["query"],
-        additionalProperties: false,
+        limit: {
+          type: "integer",
+          description: "Maximum number of matches to return (default 5).",
+        },
       },
+      required: ["query"],
+      additionalProperties: false,
     },
   },
 ];

@@ -1,6 +1,6 @@
 import { runApiKeyTests, formatApiKeyStatusBlock } from "../api-key-test.ts";
 import {
-  reloadEnvFile,
+  loadEnvFile,
   resolveProviderEnvKey,
   setEnvKey,
 } from "../env-file.ts";
@@ -21,7 +21,7 @@ export async function handleKeys(
   const sub = args[0]?.toLowerCase();
 
   if (!sub) {
-    reloadEnvFile(ctx.root);
+    loadEnvFile(ctx.root);
     ctx.writeln("API keys:");
     ctx.writeln(formatApiKeyStatusBlock());
     return;
@@ -67,7 +67,7 @@ export async function handleKeys(
 }
 
 export async function handleTestKeys(ctx: ShellContext): Promise<void> {
-  reloadEnvFile(ctx.root);
+  loadEnvFile(ctx.root);
   ctx.writeln("Running API key smoke tests...");
   ctx.writeln("");
 
@@ -82,37 +82,6 @@ export async function handleTestKeys(ctx: ShellContext): Promise<void> {
   }
 }
 
-export async function handleTest(
-  ctx: ShellContext,
-  args: string[],
-): Promise<void> {
-  const sub = args[0]?.toLowerCase();
-
-  switch (sub) {
-    case "keys":
-      await handleTestKeys(ctx);
-      break;
-    case "api":
-      ctx.writeln(
-        "(placeholder) API integration tests are not implemented yet.",
-      );
-      break;
-    case "unit":
-      ctx.writeln(
-        "(placeholder) Unit test runner is not implemented yet. Use npm test for vitest.",
-      );
-      break;
-    case undefined:
-      ctx.writeln("(placeholder) Available tests:");
-      ctx.writeln("  test keys   - API key smoke tests");
-      ctx.writeln("  test api    - judge API integration tests");
-      ctx.writeln("  test unit   - unit test suite");
-      break;
-    default:
-      ctx.writeln(`Unknown test "${sub}". Try: test keys, test api, test unit`);
-  }
-}
-
 export async function handleChat(
   ctx: ShellContext,
   args: string[],
@@ -122,7 +91,7 @@ export async function handleChat(
 }
 
 export function handleStatus(ctx: ShellContext): void {
-  reloadEnvFile(ctx.root);
+  loadEnvFile(ctx.root);
   ctx.writeln(`root: ${ctx.root}`);
   ctx.writeln(formatApiKeyStatusBlock());
 }
@@ -156,9 +125,6 @@ export async function dispatchLine(
       return false;
     case "keys":
       await handleKeys(ctx, args);
-      break;
-    case "test":
-      await handleTest(ctx, args);
       break;
     case "chat":
       await handleChat(ctx, args);

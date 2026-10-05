@@ -4,18 +4,18 @@ import { describe, expect, it } from "vitest";
 import { runApiKeyTests } from "../src/api-key-test.ts";
 import {
   ANTHROPIC_ENV_KEY,
-  loadEnvFileIntoProcess,
+  loadEnvFile,
   OPENAI_ENV_KEY,
 } from "../src/env-file.ts";
 import { ROOT } from "./root.ts";
 
 const hasOpenAiKey = (): boolean => {
-  loadEnvFileIntoProcess(ROOT);
+  loadEnvFile(ROOT);
   return Boolean(process.env[OPENAI_ENV_KEY]);
 };
 
 const hasAnthropicKey = (): boolean => {
-  loadEnvFileIntoProcess(ROOT);
+  loadEnvFile(ROOT);
   return Boolean(process.env[ANTHROPIC_ENV_KEY]);
 };
 
@@ -26,7 +26,7 @@ describe("environment", () => {
   });
 
   it("loads .env when present without throwing", () => {
-    loadEnvFileIntoProcess(ROOT);
+    loadEnvFile(ROOT);
     expect(true).toBe(true);
   });
 });

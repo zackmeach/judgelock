@@ -9,7 +9,6 @@ import {
 } from "../src/config.ts";
 import {
   listCorpusDocFiles,
-  loadCorpusDocs,
   readCorpusDocument,
   searchCorpusDocuments,
 } from "../src/corpus-docs.ts";
@@ -58,9 +57,6 @@ describe("bootstrap health", () => {
     const files = listCorpusDocFiles(ROOT);
     expect(files.length).toBeGreaterThanOrEqual(8);
     expect(files.every((f) => f.endsWith(".md"))).toBe(true);
-
-    const blob = loadCorpusDocs(ROOT);
-    expect(blob.length).toBeGreaterThan(1000);
     expect(readCorpusDocument(ROOT, files[0]!)).toContain("#");
   });
 

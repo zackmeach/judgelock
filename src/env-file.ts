@@ -26,8 +26,8 @@ function parseEnvValue(raw: string): string {
   return value;
 }
 
-/** Loads .env from disk into process.env (does not override existing vars). */
-export function loadEnvFileIntoProcess(root: string): void {
+/** Loads .env from disk into process.env, overwriting keys defined in the file. */
+export function loadEnvFile(root: string): void {
   const path = envFilePath(root);
   if (!existsSync(path)) return;
 
@@ -43,27 +43,12 @@ export function loadEnvFileIntoProcess(root: string): void {
   }
 }
 
-/** Reloads .env from disk, overwriting process.env for keys defined in the file. */
-export function reloadEnvFile(root: string): void {
-  const path = envFilePath(root);
-  if (!existsSync(path)) return;
-
-  const text = readFileSync(path, "utf8");
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    const uncommented = trimmed.startsWith("#")
-      ? trimmed.slice(1).trim()
-      : trimmed;
-    if (uncommented.startsWith("#")) continue;
-
-    const eq = uncommented.indexOf("=");
-    if (eq === -1) continue;
-    const key = uncommented.slice(0, eq).trim();
-    const value = parseEnvValue(uncommented.slice(eq + 1));
-    process.env[key] = value;
+export function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} is not set`);
   }
+  return value;
 }
 
 export function maskSecret(value: string): string {

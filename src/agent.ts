@@ -5,7 +5,6 @@ import {
   type EvaluatorRuntimeConfig,
 } from "./config.ts";
 import { describeCorpusDocs } from "./corpus-docs.ts";
-import { loadEnvFileIntoProcess } from "./env-file.ts";
 import {
   sendProviderChatWithTools,
   type AgentChatOptions,
@@ -37,9 +36,8 @@ export function createAgentSession(root: string): AgentSession {
   };
 }
 
-export function describeAgent(root: string): string {
-  const runtime = loadAgentRuntimeConfig(root);
-  return `${runtime.model_id} (${runtime.provider}) · ${describeCorpusDocs(root)} · tools enabled`;
+export function describeAgent(session: AgentSession): string {
+  return `${session.runtime.model_id} (${session.runtime.provider}) · ${describeCorpusDocs(session.root)} · tools enabled`;
 }
 
 /**
@@ -65,16 +63,4 @@ export async function sendAgentMessage(
     userMessage,
     chatOptions,
   );
-}
-
-/** Convenience wrapper that loads env keys and builds a session from disk. */
-export async function sendAgentMessageFromRoot(
-  root: string,
-  history: ChatMessage[],
-  userMessage: string,
-  messageOptions?: AgentMessageOptions,
-): Promise<ChatReply> {
-  loadEnvFileIntoProcess(root);
-  const session = createAgentSession(root);
-  return sendAgentMessage(session, history, userMessage, messageOptions);
 }
