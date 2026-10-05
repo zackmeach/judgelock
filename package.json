@@ -18,7 +18,7 @@
     "validate": "node --experimental-strip-types src/cli.ts validate",
     "shell": "node --experimental-strip-types src/cli.ts shell",
     "start": "node --experimental-strip-types src/cli.ts shell",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.test.json",
     "build": "tsc"
   },

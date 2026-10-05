@@ -70,7 +70,16 @@ const EVALUATOR_COMPONENT_ORDER: (keyof EvaluatorConfig)[] = [
  * is decorative.
  */
 export function computeEvaluatorId(config: EvaluatorConfig): string {
-  const hashes = componentHashes(config);
+  return combineComponentHashes(componentHashes(config));
+}
+
+/**
+ * Combines per-component hashes into the evaluator id. Split out so verify can
+ * check a manifest's stated components against its stated id.
+ */
+export function combineComponentHashes(
+  hashes: Record<keyof EvaluatorConfig, string>,
+): string {
   const combined = EVALUATOR_COMPONENT_ORDER
     .map((key) => `${key}:${hashes[key]}`)
     .join("\n");

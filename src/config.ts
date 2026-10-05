@@ -7,9 +7,11 @@ import {
   DecodingConfigSchema,
   EvaluatorConfigSchema,
   GoldenCaseSchema,
+  ThresholdsFileSchema,
   type EvaluatorConfig,
   type GoldenCase,
   type ReferenceDocument,
+  type ThresholdsFile,
 } from "./types.ts";
 
 const RUBRIC_PATH = "rubric/rubric.yaml";
@@ -17,6 +19,8 @@ const PROMPT_PATH = "prompts/judge.txt";
 const CONFIG_PATH = "evaluator.config.json";
 const AGENT_CONFIG_PATH = "agent.config.json";
 const SCHEMA_PATH = "schemas/verdict.schema.json";
+export const THRESHOLDS_PATH = "validation/thresholds.json";
+export const APPROVED_MANIFEST_PATH = "validation/approved-manifest.json";
 
 /**
  * Files behind implementation_digest: the scoring path plus the lockfile.
@@ -103,6 +107,11 @@ export function loadEvaluatorConfig(root: string): EvaluatorConfig {
     output_schema,
     implementation_digest,
   });
+}
+
+/** Reads validation/thresholds.json. Throws if missing or malformed. */
+export function loadThresholds(root: string): ThresholdsFile {
+  return ThresholdsFileSchema.parse(readJson(join(root, THRESHOLDS_PATH)));
 }
 
 /**

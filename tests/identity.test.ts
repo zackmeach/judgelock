@@ -5,11 +5,13 @@ import { describe, expect, it } from "vitest";
 import { IMPLEMENTATION_DIGEST_PATHS, loadEvaluatorConfig } from "../src/config.ts";
 import {
   canonicalJson,
+  combineComponentHashes,
+  componentHashes,
   computeCorpusHash,
   computeEvaluatorId,
   sha256,
 } from "../src/identity.ts";
-import type { GoldenCase, ReferenceDocument } from "../src/types.ts";
+import type { EvaluatorConfig, GoldenCase, ReferenceDocument } from "../src/types.ts";
 import { ROOT } from "./root.ts";
 
 const CASES: GoldenCase[] = [
@@ -76,6 +78,34 @@ describe("computeCorpusHash", () => {
     const nfc = mkCase("é");
     const nfd = mkCase("é");
     expect(computeCorpusHash([nfc, nfd], DOCS)).toBe(computeCorpusHash([nfd, nfc], DOCS));
+  });
+});
+
+describe("computeEvaluatorId", () => {
+  it("is byte-identical to the pre-split algorithm", () => {
+    // The computeEvaluatorId body before combineComponentHashes was split out.
+    const legacy = (hashes: Record<keyof EvaluatorConfig, string>): string =>
+      sha256(
+        (["rubric", "judge_prompt_template", "model_id", "decoding", "output_schema", "implementation_digest"] as const)
+          .map((key) => `${key}:${hashes[key]}`)
+          .join("\n"),
+      );
+    const real = loadEvaluatorConfig(ROOT);
+    expect(computeEvaluatorId(real)).toBe(legacy(componentHashes(real)));
+    expect(combineComponentHashes(componentHashes(real))).toBe(computeEvaluatorId(real));
+
+    // Frozen: the pre-split code's output on this config, computed at 901492a.
+    const synthetic: EvaluatorConfig = {
+      rubric: "rubric v1\n",
+      judge_prompt_template: "R:{{rubric}} D:{{documents}} Q:{{question}} A:{{answer}}",
+      model_id: "gpt-5.4-2026-03-05",
+      decoding: { max_tokens: 4096, reasoning_effort: "medium", stop_sequences: [] },
+      output_schema: { type: "object" },
+      implementation_digest: "0123abcd",
+    };
+    expect(computeEvaluatorId(synthetic)).toBe(
+      "3c77a1a0560aef4e07122ae1225df07cf14d231c806a45aa291f8762429e5dc7",
+    );
   });
 });
 

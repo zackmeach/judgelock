@@ -136,8 +136,27 @@ export const ThresholdSchema = z.object({
 });
 export type Threshold = z.infer<typeof ThresholdSchema>;
 
+/** The committed gate: validation/thresholds.json. */
+export const ThresholdsFileSchema = z.object({
+  rationale: z.string().min(1),
+  thresholds: z.array(ThresholdSchema).min(1),
+});
+export type ThresholdsFile = z.infer<typeof ThresholdsFileSchema>;
+
 export const ManifestSchema = z.object({
   evaluator_id: z.string(),
+  /**
+   * Per-component hashes behind evaluator_id, so verify can name which of the
+   * six components moved. evaluator_id must equal their combination.
+   */
+  evaluator_components: z.strictObject({
+    rubric: z.string(),
+    judge_prompt_template: z.string(),
+    model_id: z.string(),
+    decoding: z.string(),
+    output_schema: z.string(),
+    implementation_digest: z.string(),
+  }),
   corpus_hash: z.string(),
   /** What the API reported serving, as distinct from the configured model_id. */
   resolved_model_id: z.string(),
@@ -165,6 +184,8 @@ export interface VerifyFailure {
     | "results_mismatch"
     | "threshold_violation"
     | "manifest_invalid";
+  /** The component, metric, or case id this failure names, when it names one. */
+  subject?: string;
   detail: string;
   expected?: string;
   actual?: string;
