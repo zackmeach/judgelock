@@ -221,8 +221,9 @@ export function buildManifest(input: BuildManifestInput): Manifest {
  * retries) aborts the run: no new calls are started, calls already in flight
  * are discarded, and the returned promise rejects naming the case and run.
  * A throwing onObservation aborts the same way. The run also rejects if a
- * response reports no served model, or if the API reported serving more than
- * one model — evidence spanning two models describes neither.
+ * response reports no served model, if the API reported serving more than
+ * one model — evidence spanning two models describes neither — or if the one
+ * served model is not the configured model_id, which verify would reject.
  */
 export async function validate(opts: ValidateOptions): Promise<Manifest> {
   // ponytail: fixed pool of 4, no adaptive rate limiting; the OpenAI SDK's
@@ -288,6 +289,11 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
   if (served.length !== 1) {
     throw new Error(
       `judge API served more than one model during the run: ${served.map((id) => JSON.stringify(id)).join(", ")}`,
+    );
+  }
+  if (served[0] !== config.model_id) {
+    throw new Error(
+      `judge API served ${JSON.stringify(served[0])} but the configured model_id is ${JSON.stringify(config.model_id)}; verify would reject this candidate (resolved_model_id binding)`,
     );
   }
   return buildManifest({

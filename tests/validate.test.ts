@@ -135,6 +135,13 @@ describe("validate", () => {
     );
   });
 
+  it("rejects a consistent served model that is not the configured model_id", async () => {
+    const { judge } = fakeJudge((c) => ({ raw: honestRaw(c), resolved_model_id: "gpt-5.4" }));
+    await expect(validate({ root: fixture(), runs: 1, judge })).rejects.toThrow(
+      `judge API served "gpt-5.4" but the configured model_id is ${JSON.stringify(MODEL)}`,
+    );
+  });
+
   it.each(["", "  \t"])("rejects a response reporting no served model (%j)", async (served) => {
     const { judge } = fakeJudge((c) => ({
       raw: honestRaw(c),
