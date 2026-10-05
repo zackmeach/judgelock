@@ -1,10 +1,20 @@
-import { THRESHOLDS_PATH } from "./config.ts";
+import { join } from "node:path";
+import {
+  CASES_PATH,
+  THRESHOLDS_PATH,
+  loadCorpus,
+  loadEvaluatorConfig,
+  loadEvaluatorRuntimeConfig,
+  loadReferenceDocuments,
+  loadThresholds,
+} from "./config.ts";
 import {
   compareCodeUnits,
   componentHashes,
   computeCorpusHash,
   computeEvaluatorId,
 } from "./identity.ts";
+import { callJudge, parseVerdict, type JudgeResponse } from "./judge.ts";
 import {
   ManifestSchema,
   type EvaluatorConfig,
@@ -17,12 +27,19 @@ import {
   type VerdictLabel,
 } from "./types.ts";
 
+/** One judge call. Tests inject a fake; the default is callJudge. */
+export type JudgeFn = typeof callJudge;
+
 export interface ValidateOptions {
   root: string;
   /** Repeat count per case. >1 is what makes judge self-consistency measurable. */
   runs: number;
-  /** Where the candidate manifest is written. Never the approved manifest. */
-  out: string;
+  /** Default callJudge. */
+  judge?: JudgeFn;
+  /** Judge calls in flight at once. Default 4. */
+  concurrency?: number;
+  /** Called once per recorded observation, in completion order. */
+  onObservation?: (o: Observation, done: number, total: number) => void;
 }
 
 /** One way a set of observations fails to cover the golden set exactly. */
@@ -193,11 +210,98 @@ export function buildManifest(input: BuildManifestInput): Manifest {
 }
 
 /**
- * Makes real judge API calls across the golden set and writes a *candidate*
- * manifest plus a human-readable report under validation/reports/. Manual
- * dispatch only. Never writes to validation/approved-manifest.json —
- * promoting a candidate to approved is a human act, reviewed in a PR.
+ * Runs every golden case `runs` times against the judge and returns the
+ * *candidate* manifest. Writes no files: the CLI owns the candidate and
+ * report paths, and nothing here ever touches
+ * validation/approved-manifest.json — promoting a candidate to approved is a
+ * human act, reviewed in a PR.
+ *
+ * Judge output that does not parse is recorded as invalid_judge_output (a
+ * metric, not an error). A judge call that rejects (after the SDK's own
+ * retries) aborts the run: no new calls are started, calls already in flight
+ * are discarded, and the returned promise rejects naming the case and run.
+ * A throwing onObservation aborts the same way. The run also rejects if a
+ * response reports no served model, if the API reported serving more than
+ * one model — evidence spanning two models describes neither — or if the one
+ * served model is not the configured model_id, which verify would reject.
  */
-export async function validate(_opts: ValidateOptions): Promise<Manifest> {
-  throw new Error("not implemented");
+export async function validate(opts: ValidateOptions): Promise<Manifest> {
+  // ponytail: fixed pool of 4, no adaptive rate limiting; the OpenAI SDK's
+  // built-in retries (2, with backoff) absorb 429s. Add a limiter if a larger
+  // golden set hits sustained rate limits.
+  const concurrency = opts.concurrency ?? 4;
+  for (const [name, value] of [["runs", opts.runs], ["concurrency", concurrency]] as const) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`${name} must be an integer >= 1, got ${value}`);
+    }
+  }
+  const judge = opts.judge ?? callJudge;
+  const config = loadEvaluatorConfig(opts.root);
+  const { provider } = loadEvaluatorRuntimeConfig(opts.root);
+  const cases = loadCorpus(join(opts.root, CASES_PATH));
+  if (cases.length === 0) throw new Error(`${CASES_PATH} has no cases`);
+  const documents = loadReferenceDocuments(opts.root);
+  const thresholds = loadThresholds(opts.root);
+
+  const jobs = cases.flatMap((testCase) =>
+    Array.from({ length: opts.runs }, (_, run_index) => ({ testCase, run_index })),
+  );
+  const observations: Observation[] = [];
+  const resolvedModelIds = new Set<string>();
+  let next = 0;
+  let failed = false;
+
+  const runJob = async ({ testCase, run_index }: (typeof jobs)[number]): Promise<void> => {
+    const where = `case ${testCase.id} run ${run_index}`;
+    try {
+      let response: JudgeResponse;
+      try {
+        response = await judge(config, documents, testCase, { provider });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`judge call failed on ${where}: ${message}`, { cause: err });
+      }
+      if (failed) return;
+      if (response.resolved_model_id.trim() === "") {
+        throw new Error(`judge API reported no served model on ${where}`);
+      }
+      resolvedModelIds.add(response.resolved_model_id);
+      const observation: Observation = {
+        case_id: testCase.id,
+        run_index,
+        verdict: parseVerdict(response.raw),
+        raw_judge_response: response.raw,
+      };
+      observations.push(observation);
+      opts.onObservation?.(observation, observations.length, jobs.length);
+    } catch (err) {
+      // Any throw, including onObservation's, stops the pool before it propagates.
+      failed = true;
+      throw err;
+    }
+  };
+  const worker = async (): Promise<void> => {
+    while (!failed && next < jobs.length) await runJob(jobs[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
+
+  const served = [...resolvedModelIds].sort(compareCodeUnits);
+  if (served.length !== 1) {
+    throw new Error(
+      `judge API served more than one model during the run: ${served.map((id) => JSON.stringify(id)).join(", ")}`,
+    );
+  }
+  if (served[0] !== config.model_id) {
+    throw new Error(
+      `judge API served ${JSON.stringify(served[0])} but the configured model_id is ${JSON.stringify(config.model_id)}; verify would reject this candidate (resolved_model_id binding)`,
+    );
+  }
+  return buildManifest({
+    config,
+    cases,
+    documents,
+    observations,
+    resolvedModelId: served[0]!,
+    thresholds,
+  });
 }
