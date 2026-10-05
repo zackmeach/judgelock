@@ -68,25 +68,25 @@ export function checkCoverage(
     else unknown.add(o.case_id);
   }
   for (const id of unknown) {
-    problems.push({ case_id: id, detail: `observation for unknown case ${id}` });
+    problems.push({ case_id: id, detail: `observation for unknown case ${JSON.stringify(id)}` });
   }
 
   let most: { id: string; count: number } | undefined;
   for (const [id, indices] of runs) {
     if (indices.length === 0) {
-      problems.push({ case_id: id, detail: `case ${id} has no observations` });
+      problems.push({ case_id: id, detail: `case ${JSON.stringify(id)} has no observations` });
       continue;
     }
     const sorted = [...indices].sort((a, b) => a - b);
     const duplicates = new Set(sorted.filter((v, i) => v === sorted[i - 1]));
     for (const index of duplicates) {
-      problems.push({ case_id: id, detail: `case ${id} has duplicate run_index ${index}` });
+      problems.push({ case_id: id, detail: `case ${JSON.stringify(id)} has duplicate run_index ${index}` });
     }
     const distinct = [...new Set(sorted)];
     if (distinct.some((v, i) => v !== i)) {
       problems.push({
         case_id: id,
-        detail: `case ${id} has run indices [${distinct.join(", ")}], expected 0..${distinct.length - 1}`,
+        detail: `case ${JSON.stringify(id)} has run indices [${distinct.join(", ")}], expected 0..${distinct.length - 1}`,
       });
     }
     if (!most || indices.length > most.count) most = { id, count: indices.length };
@@ -96,7 +96,7 @@ export function checkCoverage(
     if (most && indices.length > 0 && indices.length < most.count) {
       problems.push({
         case_id: id,
-        detail: `case ${id} has ${indices.length} runs but case ${most.id} has ${most.count}`,
+        detail: `case ${JSON.stringify(id)} has ${indices.length} runs but case ${JSON.stringify(most.id)} has ${most.count}`,
       });
     }
   }
@@ -163,6 +163,20 @@ export function computeResults(
   return results;
 }
 
+/** Canonical observation order: case_id by code unit, then run_index. */
+export function compareObservations(a: Observation, b: Observation): number {
+  return compareCodeUnits(a.case_id, b.case_id) || a.run_index - b.run_index;
+}
+
+/**
+ * The one serialization of a manifest. verify rejects an approved manifest
+ * whose text (line endings and BOM aside) is not exactly this, so the text a
+ * reviewer reads is the evidence verify enforces.
+ */
+export function serializeManifest(manifest: Manifest): string {
+  return JSON.stringify(manifest, null, 2) + "\n";
+}
+
 export interface BuildManifestInput {
   config: EvaluatorConfig;
   cases: GoldenCase[];
@@ -183,9 +197,7 @@ export function buildManifest(input: BuildManifestInput): Manifest {
       `observations do not cover the corpus:\n${problems.map((p) => `  ${p.detail}`).join("\n")}`,
     );
   }
-  const observations = [...input.observations].sort(
-    (a, b) => compareCodeUnits(a.case_id, b.case_id) || a.run_index - b.run_index,
-  );
+  const observations = [...input.observations].sort(compareObservations);
   return ManifestSchema.parse({
     evaluator_id: computeEvaluatorId(input.config),
     evaluator_components: componentHashes(input.config),

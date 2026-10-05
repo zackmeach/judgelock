@@ -35,16 +35,21 @@ export type DecodingConfig = z.infer<typeof DecodingConfigSchema>;
 /**
  * The six score-affecting components of the evaluator.
  *
- * `model_id` is the *configured* identifier (e.g. an alias). What the API
- * actually served is `Manifest.resolved_model_id` — a different fact,
- * recorded separately, deliberately not part of the identity hash.
+ * `model_id` must be a pinned, dated snapshot id. verify requires the
+ * manifest's `resolved_model_id` (what the API reported serving) to hash to
+ * the model_id component, so an alias that the API resolves to a different
+ * string can never be approved. By design: an alias would reduce the identity
+ * to a routing label.
  */
 export const EvaluatorConfigSchema = z.object({
   /** Contents of rubric/rubric.yaml, through normalizeBlob. */
   rubric: z.string(),
   /** Judge prompt template through normalizeBlob, placeholders unsubstituted. */
   judge_prompt_template: z.string(),
-  /** Model identifier as configured, before any server-side resolution. */
+  /**
+   * Pinned, dated snapshot id. Never an alias: verify requires the served
+   * model (Manifest.resolved_model_id) to hash to this component.
+   */
   model_id: z.string(),
   decoding: DecodingConfigSchema,
   /** Verbatim contents of schemas/verdict.schema.json. */
@@ -92,7 +97,8 @@ export const GoldenCaseSchema = z.object({
   question: z.string(),
   /** The model output being graded. */
   answer: z.string(),
-  human_label: VerdictLabelSchema,
+  /** invalid_judge_output is harness-assigned; a human label never uses it. */
+  human_label: VerdictLabelSchema.exclude(["invalid_judge_output"]),
   human_severity: SeveritySchema,
   notes: z.string().optional(),
 });
@@ -158,7 +164,10 @@ export const ManifestSchema = z.object({
     implementation_digest: z.string(),
   }),
   corpus_hash: z.string(),
-  /** What the API reported serving, as distinct from the configured model_id. */
+  /**
+   * What the API reported serving, recorded from the response. Must equal the
+   * configured model_id (checked by verify).
+   */
   resolved_model_id: z.string(),
   raw_observations: z.array(ObservationSchema),
   results: ResultsSchema,

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   APPROVED_MANIFEST_PATH,
+  CASES_PATH,
   loadCorpus,
   loadEvaluatorConfig,
   loadReferenceDocuments,
@@ -28,6 +29,7 @@ import {
   buildManifest,
   checkCoverage,
   computeResults,
+  serializeManifest,
 } from "../../src/validate.ts";
 import { checkThresholds, formatVerifyResult, verify } from "../../src/verify.ts";
 import { ROOT } from "../root.ts";
@@ -80,7 +82,6 @@ const DOCS: Record<string, string> = {
   "b-penalty.md": "# Penalty\nLate Part B enrollment adds 10% per full 12-month period.\n",
 };
 
-const CASES_PATH = join("corpus", "cases.jsonl");
 const fixtures: string[] = [];
 
 afterEach(() => {
@@ -92,6 +93,10 @@ const honest = (c: GoldenCase): Verdict => ({
   severity: c.human_severity,
   evidence: `evidence for ${c.id}`,
 });
+
+/** Judges the critical non-pass case "case-critical" as pass; honest otherwise. */
+const missCritical = (c: GoldenCase): Verdict =>
+  c.id === "case-critical" ? { ...honest(c), label: "pass" } : honest(c);
 
 function observe(runs: number, judge: (c: GoldenCase) => Verdict = honest): Observation[] {
   return CASES.flatMap((c) =>
@@ -108,16 +113,26 @@ function writeManifest(
   observations: Observation[],
   edit?: (m: Manifest) => void,
 ): void {
+  const config = loadEvaluatorConfig(dir);
   const manifest = buildManifest({
-    config: loadEvaluatorConfig(dir),
+    config,
     cases: loadCorpus(join(dir, CASES_PATH)),
     documents: loadReferenceDocuments(dir),
     observations,
-    resolvedModelId: "gpt-5.4-2026-03-05",
+    resolvedModelId: config.model_id,
     thresholds: loadThresholds(dir),
   });
   edit?.(manifest);
-  writeFileSync(join(dir, APPROVED_MANIFEST_PATH), JSON.stringify(manifest, null, 2));
+  writeFileSync(join(dir, APPROVED_MANIFEST_PATH), serializeManifest(manifest));
+}
+
+/** Rewrites the approved manifest's text; the edit must change it. */
+function editManifestText(dir: string, edit: (text: string) => string): void {
+  const path = join(dir, APPROVED_MANIFEST_PATH);
+  const text = readFileSync(path, "utf8");
+  const next = edit(text);
+  expect(next).not.toBe(text);
+  writeFileSync(path, next);
 }
 
 function writeCases(dir: string, cases: GoldenCase[]): void {
@@ -245,8 +260,6 @@ describe("verify: deliberate drift", () => {
   });
 
   it("critical non-pass judged pass violates critical_miss_rate", () => {
-    const missCritical = (c: GoldenCase): Verdict =>
-      c.id === "case-critical" ? { ...honest(c), label: "pass" } : honest(c);
     const result = verify({ root: fixture(observe(2, missCritical)) });
     expect(failures(result)).toContain("threshold_violation/critical_miss_rate");
   });
@@ -312,6 +325,157 @@ describe("verify: deliberate drift", () => {
       "manifest_invalid",
       "evaluator_id_mismatch",
     ]);
+  });
+
+  it("an extra stated metric is a results mismatch", () => {
+    const dir = fixture(observe(2), (m) => {
+      m.results.bogus = 1;
+    });
+    expect(failures(verify({ root: dir }))).toEqual(["results_mismatch/bogus"]);
+  });
+
+  it("evidence-only verdict tamper with raw unchanged is caught by reparse", () => {
+    const dir = fixture(observe(2), (m) => {
+      m.raw_observations.find((o) => o.case_id === "case-pass")!.verdict.evidence = "edited";
+    });
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid/case-pass"]);
+  });
+
+  it("severity-only verdict tamper with raw unchanged is caught by reparse", () => {
+    const dir = fixture(observe(2), (m) => {
+      m.raw_observations.find((o) => o.case_id === "case-pass")!.verdict.severity = "critical";
+    });
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid/case-pass"]);
+  });
+
+  it("gates on validation/thresholds.json, not the manifest's thresholds", () => {
+    const dir = fixture(observe(2, missCritical), (m) => {
+      m.thresholds.find((t) => t.metric === "critical_miss_rate")!.bound = 1;
+    });
+    const found = failures(verify({ root: dir }));
+    expect(found).toContain("manifest_invalid");
+    expect(found).toContain("threshold_violation/critical_miss_rate");
+  });
+});
+
+describe("verify: resolved_model_id", () => {
+  it("re-stamped model swap is caught", () => {
+    const dir = fixture();
+    const served = loadEvaluatorConfig(dir).model_id;
+    editJson(join(dir, "evaluator.config.json"), (c) => {
+      c.model_id = "gpt-5.4-2026-09-01";
+    });
+    // Components and id re-stamped to the new model; the evidence still says
+    // it was served by the old one.
+    writeManifest(dir, observe(2), (m) => {
+      m.resolved_model_id = served;
+    });
+    expect(failures(verify({ root: dir }))).toContain("manifest_invalid/resolved_model_id");
+  });
+
+  it("empty resolved_model_id is caught", () => {
+    const dir = fixture(observe(2), (m) => {
+      m.resolved_model_id = "";
+    });
+    expect(failures(verify({ root: dir }))).toContain("manifest_invalid/resolved_model_id");
+  });
+});
+
+describe("verify: canonical form", () => {
+  it("duplicate results key is rejected", () => {
+    const dir = fixture();
+    // JSON.parse keeps the last key, so the reviewed first one would be ignored.
+    editManifestText(dir, (t) =>
+      t.replace('"results": {', '"results": {\n    "agreement": 0.1\n  },\n  "results": {'),
+    );
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
+  });
+
+  it("__proto__ in evaluator_components is rejected", () => {
+    const dir = fixture();
+    editManifestText(dir, (t) =>
+      t.replace('"evaluator_components": {', '"evaluator_components": {\n    "__proto__": "x",'),
+    );
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
+  });
+
+  it("extra top-level field is rejected", () => {
+    const dir = fixture();
+    editManifestText(dir, (t) => t.replace(/^\{\n/, '{\n  "note": "hand edit",\n'));
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
+  });
+
+  it("-0 in results is rejected", () => {
+    const dir = fixture();
+    editManifestText(dir, (t) =>
+      t.replace('"critical_miss_rate": 0,', '"critical_miss_rate": -0,'),
+    );
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
+  });
+
+  it("reordered keys are rejected", () => {
+    const dir = fixture();
+    editManifestText(
+      dir,
+      (t) => JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(t)).reverse()), null, 2) + "\n",
+    );
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
+  });
+
+  it("observations out of canonical order are rejected", () => {
+    const dir = fixture(observe(2), (m) => {
+      m.raw_observations.reverse();
+    });
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
+  });
+
+  it("a CRLF + BOM copy of a canonical manifest passes", () => {
+    const dir = fixture();
+    editManifestText(dir, (t) => `﻿${t.replace(/\n/g, "\r\n")}`);
+    expect(verify({ root: dir }).failures).toEqual([]);
+  });
+});
+
+describe("buildManifest", () => {
+  const input = () => ({
+    config: loadEvaluatorConfig(ROOT),
+    cases: CASES,
+    documents: Object.entries(DOCS).map(([filename, content]) => ({ filename, content })),
+    resolvedModelId: "gpt-5.4-2026-03-05",
+    thresholds: loadThresholds(ROOT),
+  });
+
+  it("throws on a missing observation", () => {
+    const observations = observe(2).filter(
+      (o) => !(o.case_id === "case-standard" && o.run_index === 1),
+    );
+    expect(() => buildManifest({ ...input(), observations })).toThrow(
+      /"case-standard" has 1 runs/,
+    );
+  });
+
+  it("orders observations by case_id code unit, then run_index", () => {
+    const m = buildManifest({ ...input(), observations: observe(2).reverse() });
+    expect(m.raw_observations.map((o) => `${o.case_id}#${o.run_index}`)).toEqual([
+      "case-critical#0",
+      "case-critical#1",
+      "case-pass#0",
+      "case-pass#1",
+      "case-standard#0",
+      "case-standard#1",
+      "case-unsupported#0",
+      "case-unsupported#1",
+    ]);
+  });
+});
+
+describe("loadCorpus", () => {
+  it("rejects a case labeled invalid_judge_output", () => {
+    const dir = mkdtempSync(join(tmpdir(), "judgelock-corpus-"));
+    fixtures.push(dir);
+    const path = join(dir, "cases.jsonl");
+    writeFileSync(path, `${JSON.stringify({ ...CASES[0], human_label: "invalid_judge_output" })}\n`);
+    expect(() => loadCorpus(path)).toThrow(/human_label/);
   });
 });
 
@@ -427,7 +591,7 @@ describe("checkCoverage", () => {
 
   it("names an observation for an unknown case", () => {
     expect(checkCoverage([ob("A", 0), ob("B", 0), ob("Z", 0)], cases)).toEqual([
-      { case_id: "Z", detail: expect.stringContaining("unknown case Z") },
+      { case_id: "Z", detail: expect.stringContaining('unknown case "Z"') },
     ]);
   });
 
@@ -451,7 +615,7 @@ describe("checkCoverage", () => {
 
   it("names a case whose run count differs", () => {
     expect(checkCoverage([ob("A", 0), ob("A", 1), ob("B", 0)], cases)).toEqual([
-      { case_id: "B", detail: expect.stringContaining("has 1 runs but case A has 2") },
+      { case_id: "B", detail: expect.stringContaining('case "B" has 1 runs but case "A" has 2') },
     ]);
   });
 });
