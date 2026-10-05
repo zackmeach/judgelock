@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { listCorpusDocFiles, readCorpusDocument } from "./corpus-docs.ts";
-import { computeImplementationDigest } from "./identity.ts";
+import { computeImplementationDigest, normalizeBlob } from "./identity.ts";
 import {
   DecodingConfigSchema,
   EvaluatorConfigSchema,
@@ -20,19 +20,20 @@ const SCHEMA_PATH = "schemas/verdict.schema.json";
 
 /**
  * Files behind implementation_digest: the scoring path plus the lockfile.
- * src/corpus-docs.ts is deliberately excluded — its effect on judge input is
- * already captured by corpus_hash over the loaded doc content. Agent, shell,
- * verify, and cli code is excluded so subject-agent edits never move
+ * src/corpus-docs.ts is deliberately excluded — the files it selects and the
+ * content it loads are captured by corpus_hash, and renderDocuments
+ * canonicalizes order and line endings before the judge sees them. Agent,
+ * shell, verify, and cli code is excluded so subject-agent edits never move
  * evaluator identity. A missing file throws.
  */
-export const IMPLEMENTATION_DIGEST_PATHS = [
+export const IMPLEMENTATION_DIGEST_PATHS = Object.freeze([
   "src/config.ts",
   "src/identity.ts",
   "src/judge.ts",
   "src/types.ts",
   "src/validate.ts",
   "package-lock.json",
-];
+]) as readonly string[];
 
 export const ProviderSchema = z.enum(["openai", "anthropic"]);
 export type Provider = z.infer<typeof ProviderSchema>;
@@ -82,8 +83,10 @@ export function loadAgentRuntimeConfig(root: string): EvaluatorRuntimeConfig {
  * missing component is a broken evaluator, not a zero value.
  */
 export function loadEvaluatorConfig(root: string): EvaluatorConfig {
-  const rubric = readUtf8(join(root, RUBRIC_PATH));
-  const judge_prompt_template = readUtf8(join(root, PROMPT_PATH));
+  // Normalized here, not only when hashed, so the prompt the judge sees is the
+  // same bytes on a CRLF or BOM checkout as on the one the id was approved on.
+  const rubric = normalizeBlob(readUtf8(join(root, RUBRIC_PATH)));
+  const judge_prompt_template = normalizeBlob(readUtf8(join(root, PROMPT_PATH)));
   const runtime = loadEvaluatorRuntimeConfig(root);
   const output_schema = readJson(join(root, SCHEMA_PATH));
 

@@ -1,7 +1,3 @@
-# judgelock rubric. Spliced verbatim into the judge prompt as {{rubric}} and
-# hashed into the evaluator id: any byte change here, comments included, is an
-# identity change that requires a new approved validation run.
-
 version: 1
 
 instructions: >
@@ -16,7 +12,8 @@ labels:
       The answer states something the reference documents contradict: a wrong
       date, deadline, dollar amount, percentage, duration, count, eligibility
       rule, or consequence. One contradicted material claim is enough, even if
-      the rest of the answer is right.
+      the rest of the answer is right. Saying the documents do not cover
+      something they do cover is incomplete, not incorrect.
   - id: unsupported
     guidance: >
       The answer makes a material claim the reference documents neither state
@@ -24,15 +21,17 @@ labels:
       procedures) and claims from general knowledge presented as fact.
   - id: incomplete
     guidance: >
-      Everything the answer states is supported, but it omits information the
-      documents give that changes what the asker should do: a condition,
-      exception, deadline, or penalty that applies to the situation described
-      in the question. Omitting detail that would not change the asker's next
-      step is not incomplete.
+      The answer has no incorrect or unsupported claim, but leaves out
+      something the documents give that changes what the asker should do: a
+      condition, exception, deadline, or penalty that applies to the situation
+      in the question. Also incomplete: an answer that does not answer the
+      question asked, and an answer that says the documents do not cover
+      something they do cover. Leaving out detail that would not change the
+      asker's next step is not incomplete.
   - id: pass
     guidance: >
       Every material claim is supported by the documents, nothing that changes
-      the asker's next step is omitted, and the answer addresses the question
+      the asker's next step is left out, and the answer answers the question
       asked. An answer that says the documents do not establish something
       passes, provided the documents indeed do not establish it.
 
@@ -41,8 +40,11 @@ severity:
     guidance: >
       Acting on the answer as written could make the asker miss an enrollment
       window, incur a late enrollment penalty, or go without coverage. Judge
-      this from the answer's error, not from the topic.
+      this from what is wrong with the answer, not from its topic: the
+      contradicted claim, the unsupported claim taken as false, or the
+      omission.
   - id: standard
     guidance: >
-      Any other error, such as a wrong premium or deductible amount the asker
-      would only budget around. Always use standard when the label is pass.
+      Anything else wrong with the answer, such as a wrong premium or
+      deductible amount the asker would only budget around. Always use
+      standard when the label is pass.

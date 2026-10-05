@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { Provider } from "./config.ts";
 import { OPENAI_ENV_KEY, requireEnv } from "./env-file.ts";
+import { compareCodeUnits, normalizeBlob } from "./identity.ts";
 import type {
   EvaluatorConfig,
   GoldenCase,
@@ -47,8 +48,10 @@ export type PromptValues = Record<(typeof PROMPT_PLACEHOLDERS)[number], string>;
  * Substitutes every `{{name}}` in one pass. A function replacement means `$`
  * sequences in inserted text are literal, and inserted text is never
  * re-scanned, so a question containing `{{answer}}` stays literal. Throws on
- * an unknown placeholder, and on a template missing any of the four: a
- * template without `{{documents}}` would silently grade without the docs.
+ * any `{{...}}` whose name is not exactly one of the four (so `{{ question }}`
+ * fails instead of reaching the judge), and on a template missing any of the
+ * four: a template without `{{documents}}` would silently grade without the
+ * docs.
  */
 export function renderPrompt(template: string, values: PromptValues): string {
   for (const key of PROMPT_PLACEHOLDERS) {
@@ -56,7 +59,7 @@ export function renderPrompt(template: string, values: PromptValues): string {
       throw new Error(`judge prompt template is missing {{${key}}}`);
     }
   }
-  return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => {
+  return template.replace(/\{\{([^{}]*)\}\}/g, (_match, key: string) => {
     if (!(PROMPT_PLACEHOLDERS as readonly string[]).includes(key)) {
       throw new Error(`judge prompt template has unknown placeholder {{${key}}}`);
     }
@@ -64,11 +67,20 @@ export function renderPrompt(template: string, values: PromptValues): string {
   });
 }
 
-/** Renders reference documents for `{{documents}}`, in the given order. */
+/**
+ * Renders reference documents for `{{documents}}`. Sorts by filename and
+ * normalizes content itself rather than trusting the loader: corpus-docs.ts
+ * is outside the implementation digest, so the order and bytes the judge
+ * sees must be fixed here, in digested code.
+ */
 export function renderDocuments(documents: ReferenceDocument[]): string {
-  return documents
-    .map((doc) => `### ${doc.filename}\n\n${doc.content}`)
-    .join("\n\n---\n\n");
+  return [...documents]
+    .sort((a, b) => compareCodeUnits(a.filename, b.filename))
+    .map(
+      (doc) =>
+        `<document filename="${doc.filename}">\n${normalizeBlob(doc.content)}\n</document>`,
+    )
+    .join("\n\n");
 }
 
 /** Schema sent to the judge API — harness-owned labels are excluded. */

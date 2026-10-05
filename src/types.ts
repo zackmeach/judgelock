@@ -40,9 +40,9 @@ export type DecodingConfig = z.infer<typeof DecodingConfigSchema>;
  * recorded separately, deliberately not part of the identity hash.
  */
 export const EvaluatorConfigSchema = z.object({
-  /** Verbatim contents of rubric/rubric.yaml. */
+  /** Contents of rubric/rubric.yaml, through normalizeBlob. */
   rubric: z.string(),
-  /** Verbatim judge prompt template, placeholders unsubstituted. */
+  /** Judge prompt template through normalizeBlob, placeholders unsubstituted. */
   judge_prompt_template: z.string(),
   /** Model identifier as configured, before any server-side resolution. */
   model_id: z.string(),
@@ -51,8 +51,9 @@ export const EvaluatorConfigSchema = z.object({
   output_schema: z.unknown(),
   /**
    * sha256 over the scoring-path sources plus the dependency lockfile.
-   * src/corpus-docs.ts is deliberately excluded: its effect on judge input is
-   * already captured by corpus_hash over the loaded doc content. Agent, shell,
+   * src/corpus-docs.ts is deliberately excluded: the files it selects and the
+   * content it loads are captured by corpus_hash, and renderDocuments
+   * canonicalizes order and line endings before the judge sees them. Agent, shell,
    * verify, and cli code is excluded so subject-agent edits never move
    * evaluator identity.
    */

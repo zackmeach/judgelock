@@ -96,6 +96,16 @@ export function componentHashes(
 }
 
 /**
+ * UTF-16 code-unit order. Every sort feeding a hash or the judge prompt uses
+ * this, never localeCompare: collation varies with the machine's ICU locale
+ * and ties canonically equivalent strings (NFC vs NFD), either of which would
+ * make the result depend on where it ran or on input order.
+ */
+export function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
  * Hashes everything the judge grades: the golden set and the reference
  * documents spliced into the prompt. Order-independent — cases sorted by id,
  * documents by filename — so that reordering cases.jsonl or listing docs in a
@@ -110,12 +120,10 @@ export function computeCorpusHash(
   cases: GoldenCase[],
   documents: ReferenceDocument[],
 ): string {
-  const sortedCases = [...cases].sort((a, b) => a.id.localeCompare(b.id));
+  const sortedCases = [...cases].sort((a, b) => compareCodeUnits(a.id, b.id));
   const sortedDocuments = documents
     .map((doc) => ({ filename: doc.filename, content: normalizeBlob(doc.content) }))
-    // Code-unit order, not localeCompare: the hash must not depend on the
-    // machine's ICU locale. Matches listCorpusDocFiles' .sort().
-    .sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
+    .sort((a, b) => compareCodeUnits(a.filename, b.filename));
   return sha256(
     canonicalJson({ cases: sortedCases, documents: sortedDocuments }),
   );
@@ -127,8 +135,9 @@ export function computeCorpusHash(
  * a judge response into a score changed underneath them.
  *
  * Scoring path only (IMPLEMENTATION_DIGEST_PATHS in config.ts).
- * src/corpus-docs.ts is deliberately excluded: its effect on judge input is
- * already captured by corpus_hash over the loaded doc content. Agent, shell,
+ * src/corpus-docs.ts is deliberately excluded: the files it selects and the
+ * content it loads are captured by corpus_hash, and renderDocuments
+ * canonicalizes order and line endings before the judge sees them. Agent, shell,
  * verify, and cli code is excluded so subject-agent edits never move
  * evaluator identity.
  *
@@ -136,14 +145,18 @@ export function computeCorpusHash(
  * settled, not a preference: the .ts files are what the repo stores, what a
  * reviewer reads, and what a mutation test edits. dist/ is derived, gitignored,
  * and absent in CI. It also closes the seam — `verify` executes these same .ts
- * files via Node's type stripping, so the bytes that are digested are the bytes
- * that run. Digesting a transformed artifact would break that equality.
+ * files via Node's type stripping, so the digested files are byte-for-byte the
+ * code that runs. Digesting a transformed artifact would break that equality.
+ * The digest covers the scoring path's own code, not everything it imports:
+ * the import-closure test in tests/identity.test.ts enforces that every
+ * runtime import of a digested file is itself digested or allowlisted there
+ * with a reason.
  *
  * Blobs go through normalizeBlob before hashing.
  */
 export function computeImplementationDigest(
   root: string,
-  relativePaths: string[],
+  relativePaths: readonly string[],
 ): string {
   const sortedPaths = [...relativePaths].sort();
   const parts = sortedPaths.map((rel) => {
