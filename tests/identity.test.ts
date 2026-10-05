@@ -109,6 +109,33 @@ describe("computeEvaluatorId", () => {
   });
 });
 
+describe("componentHashes key order", () => {
+  const base: EvaluatorConfig = {
+    rubric: "r",
+    judge_prompt_template: "t",
+    model_id: "m",
+    decoding: { max_tokens: 4096, reasoning_effort: "medium", stop_sequences: [] },
+    output_schema: { type: "object", properties: { label: {}, severity: {}, evidence: {} } },
+    implementation_digest: "d",
+  };
+
+  it("decoding is canonicalJson: non-alphabetical key order hashes the same", () => {
+    const shuffled = { ...base, decoding: { stop_sequences: [], reasoning_effort: "medium" as const, max_tokens: 4096 } };
+    expect(Object.keys(shuffled.decoding)).not.toEqual(Object.keys(shuffled.decoding).sort());
+    expect(componentHashes(shuffled).decoding).toBe(componentHashes(base).decoding);
+    expect(componentHashes(base).decoding).toBe(sha256(canonicalJson(base.decoding)));
+  });
+
+  it("output_schema keeps key order: reordered properties hash differently", () => {
+    const reordered = {
+      ...base,
+      output_schema: { type: "object", properties: { evidence: {}, severity: {}, label: {} } },
+    };
+    expect(componentHashes(reordered).output_schema).not.toBe(componentHashes(base).output_schema);
+    expect(componentHashes(base).output_schema).toBe(sha256(JSON.stringify(base.output_schema)));
+  });
+});
+
 describe("loadEvaluatorConfig", () => {
   it("normalizes rubric and template at load without moving the id", () => {
     const tmp = copyInputs();
@@ -126,6 +153,37 @@ describe("loadEvaluatorConfig", () => {
       // hashBlob is idempotent: raw and normalized bytes give the same id.
       const raw = { ...lfConfig, rubric: `﻿${lfConfig.rubric.replace(/\n/g, "\r\n")}` };
       expect(computeEvaluatorId(raw)).toBe(computeEvaluatorId(lfConfig));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("loadEvaluatorConfig inputs", () => {
+  it("reads a BOM-prefixed evaluator.config.json without moving the id", () => {
+    const tmp = copyInputs();
+    try {
+      const path = join(tmp, "evaluator.config.json");
+      writeFileSync(path, `\uFEFF${readFileSync(path, "utf8")}`);
+      expect(computeEvaluatorId(loadEvaluatorConfig(tmp))).toBe(
+        computeEvaluatorId(loadEvaluatorConfig(ROOT)),
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects top_k for the openai judge: it would be hashed but never sent", () => {
+    const tmp = copyInputs();
+    try {
+      const path = join(tmp, "evaluator.config.json");
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      expect(config.provider).toBe("openai");
+      config.decoding.top_k = 40;
+      writeFileSync(path, JSON.stringify(config));
+      expect(() => loadEvaluatorConfig(tmp)).toThrow(
+        "top_k is not supported by the OpenAI judge API and would be hashed but never sent",
+      );
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

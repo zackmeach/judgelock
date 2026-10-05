@@ -18,6 +18,8 @@ import {
   loadReferenceDocuments,
   loadThresholds,
 } from "../../src/config.ts";
+import { componentHashes, computeEvaluatorId } from "../../src/identity.ts";
+import { buildJudgeRequest, requestSha256 } from "../../src/judge.ts";
 import type {
   GoldenCase,
   Manifest,
@@ -98,32 +100,67 @@ const honest = (c: GoldenCase): Verdict => ({
 const missCritical = (c: GoldenCase): Verdict =>
   c.id === "case-critical" ? { ...honest(c), label: "pass" } : honest(c);
 
+/** validation/thresholds.json runs: the only promotable runs per case. */
+const RUNS = loadThresholds(ROOT).runs;
+
+/** request_sha256 is a placeholder until writeManifest stamps it for a fixture. */
 function observe(runs: number, judge: (c: GoldenCase) => Verdict = honest): Observation[] {
   return CASES.flatMap((c) =>
     Array.from({ length: runs }, (_, run_index) => {
       const verdict = judge(c);
-      return { case_id: c.id, run_index, verdict, raw_judge_response: JSON.stringify(verdict) };
+      return {
+        case_id: c.id,
+        run_index,
+        request_sha256: "0".repeat(64),
+        verdict,
+        raw_judge_response: JSON.stringify(verdict),
+        response: { id: `resp-${c.id}-${run_index}`, finish_reason: "stop", refusal: null },
+      };
     }),
   );
 }
 
-/** Builds a manifest from the fixture's own inputs, optionally edits it, writes it. */
+/**
+ * Builds a manifest from the fixture's own inputs, optionally edits it, writes
+ * it. Stamps each observation's request_sha256 for the fixture's current tree,
+ * as an honest validate run would.
+ */
 function writeManifest(
   dir: string,
   observations: Observation[],
   edit?: (m: Manifest) => void,
 ): void {
   const config = loadEvaluatorConfig(dir);
+  const cases = loadCorpus(join(dir, CASES_PATH));
+  const documents = loadReferenceDocuments(dir);
+  const stamped = observations.map((o) => {
+    const c = cases.find((x) => x.id === o.case_id);
+    return c ? { ...o, request_sha256: requestSha256(buildJudgeRequest(config, documents, c)) } : o;
+  });
   const manifest = buildManifest({
     config,
-    cases: loadCorpus(join(dir, CASES_PATH)),
-    documents: loadReferenceDocuments(dir),
-    observations,
+    cases,
+    documents,
+    observations: stamped,
     resolvedModelId: config.model_id,
     thresholds: loadThresholds(dir),
   });
   edit?.(manifest);
   writeFileSync(join(dir, APPROVED_MANIFEST_PATH), serializeManifest(manifest));
+}
+
+/**
+ * A forger's re-stamp: evaluator_id and components recomputed for the
+ * fixture's current tree, observations (and their request hashes) untouched.
+ */
+function restamp(dir: string, edit?: (m: Manifest) => void): void {
+  const path = join(dir, APPROVED_MANIFEST_PATH);
+  const manifest = JSON.parse(readFileSync(path, "utf8")) as Manifest;
+  const config = loadEvaluatorConfig(dir);
+  manifest.evaluator_components = componentHashes(config);
+  manifest.evaluator_id = computeEvaluatorId(config);
+  edit?.(manifest);
+  writeFileSync(path, serializeManifest(manifest));
 }
 
 /** Rewrites the approved manifest's text; the edit must change it. */
@@ -140,7 +177,7 @@ function writeCases(dir: string, cases: GoldenCase[]): void {
 }
 
 /** Fresh temp repo: real instrument, synthetic corpus, approved manifest. */
-function fixture(observations: Observation[] = observe(2), edit?: (m: Manifest) => void): string {
+function fixture(observations: Observation[] = observe(RUNS), edit?: (m: Manifest) => void): string {
   const dir = mkdtempSync(join(tmpdir(), "judgelock-verify-"));
   fixtures.push(dir);
   for (const p of INSTRUMENT) cpSync(join(ROOT, p), join(dir, p), { recursive: true });
@@ -202,6 +239,14 @@ describe("verify: deliberate drift", () => {
     expect(failures(verify({ root: dir }))).toEqual(["evaluator_id_mismatch/decoding"]);
   });
 
+  it("verdict schema properties reordered names output_schema", () => {
+    const dir = fixture();
+    editJson(join(dir, "schemas", "verdict.schema.json"), (s) => {
+      s.properties = Object.fromEntries(Object.entries(s.properties).reverse());
+    });
+    expect(failures(verify({ root: dir }))).toEqual(["evaluator_id_mismatch/output_schema"]);
+  });
+
   it("verdict schema description edit names output_schema", () => {
     const dir = fixture();
     editJson(join(dir, "schemas", "verdict.schema.json"), (s) => {
@@ -244,7 +289,7 @@ describe("verify: deliberate drift", () => {
   });
 
   it("tampered stated agreement is a results mismatch", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.results.agreement = 0.99;
     });
     const result = verify({ root: dir });
@@ -253,7 +298,7 @@ describe("verify: deliberate drift", () => {
   });
 
   it("tampered verdict label with raw unchanged is caught by reparse", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.raw_observations.find((o) => o.case_id === "case-pass")!.verdict.label = "incorrect";
     });
     expect(failures(verify({ root: dir }))).toContain("manifest_invalid/case-pass");
@@ -264,21 +309,31 @@ describe("verify: deliberate drift", () => {
     expect(failures(result)).toContain("threshold_violation/critical_miss_rate");
   });
 
-  it("single-run evidence fails self_consistency", () => {
+  it("single-run evidence fails the pinned runs and self_consistency", () => {
     expect(failures(verify({ root: fixture(observe(1)) }))).toEqual([
+      "manifest_invalid",
       "threshold_violation/self_consistency",
     ]);
   });
 
+  it("honest evidence at fewer runs than thresholds.json pins is exactly one manifest_invalid", () => {
+    expect(RUNS).toBe(3);
+    const result = verify({ root: fixture(observe(2)) });
+    expect(failures(result)).toEqual(["manifest_invalid"]);
+    expect(result.failures[0]!.detail).toBe(
+      "evidence has 2 runs per case; validation/thresholds.json requires 3",
+    );
+  });
+
   it("loosened manifest thresholds are invalid", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.thresholds[0]!.bound = 0.5;
     });
     expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
   });
 
   it("a different threshold_source is invalid", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.threshold_source = "validation/other-thresholds.json";
     });
     expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
@@ -293,14 +348,14 @@ describe("verify: deliberate drift", () => {
   });
 
   it("manifest failing the schema is exactly one manifest_invalid", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       delete (m as Partial<Manifest>).evaluator_components;
     });
     expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
   });
 
   it("a case with its observations removed is named", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.raw_observations = m.raw_observations.filter((o) => o.case_id !== "case-standard");
       m.results = computeResults(m.raw_observations, CASES);
     });
@@ -308,7 +363,7 @@ describe("verify: deliberate drift", () => {
   });
 
   it("tampered evaluator_components fail self-consistency and name the component", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.evaluator_components.rubric = "0".repeat(64);
     });
     expect(failures(verify({ root: dir }))).toEqual([
@@ -318,7 +373,7 @@ describe("verify: deliberate drift", () => {
   });
 
   it("tampered evaluator_id alone fails self-consistency and the id check", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.evaluator_id = "0".repeat(64);
     });
     expect(failures(verify({ root: dir }))).toEqual([
@@ -328,21 +383,21 @@ describe("verify: deliberate drift", () => {
   });
 
   it("an extra stated metric is a results mismatch", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.results.bogus = 1;
     });
     expect(failures(verify({ root: dir }))).toEqual(["results_mismatch/bogus"]);
   });
 
   it("evidence-only verdict tamper with raw unchanged is caught by reparse", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.raw_observations.find((o) => o.case_id === "case-pass")!.verdict.evidence = "edited";
     });
     expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid/case-pass"]);
   });
 
   it("severity-only verdict tamper with raw unchanged is caught by reparse", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.raw_observations.find((o) => o.case_id === "case-pass")!.verdict.severity = "critical";
     });
     expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid/case-pass"]);
@@ -358,23 +413,67 @@ describe("verify: deliberate drift", () => {
   });
 });
 
+describe("verify: request binding", () => {
+  it("rubric edit with a re-stamped manifest is exactly request_mismatch", () => {
+    const dir = fixture();
+    appendFileSync(join(dir, "rubric", "rubric.yaml"), "\n# drift\n");
+    restamp(dir);
+    const result = verify({ root: dir });
+    expect(failures(result)).toEqual(["request_mismatch"]);
+    expect(result.failures[0]!.detail).toBe(
+      `${CASES.length * RUNS} of ${CASES.length * RUNS} observations were judged with a request the working tree would not send; first: "case-critical", "case-pass", "case-standard", "case-unsupported"`,
+    );
+  });
+
+  it("schema properties reordered with a re-stamped manifest is exactly request_mismatch", () => {
+    const dir = fixture();
+    editJson(join(dir, "schemas", "verdict.schema.json"), (s) => {
+      s.properties = Object.fromEntries(Object.entries(s.properties).reverse());
+    });
+    restamp(dir);
+    expect(failures(verify({ root: dir }))).toEqual(["request_mismatch"]);
+  });
+
+  it("model swap fully re-stamped, resolved_model_id included, is exactly request_mismatch", () => {
+    const dir = fixture();
+    editJson(join(dir, "evaluator.config.json"), (c) => {
+      c.model_id = "gpt-5.4-2026-09-01";
+    });
+    restamp(dir, (m) => {
+      m.resolved_model_id = "gpt-5.4-2026-09-01";
+    });
+    expect(failures(verify({ root: dir }))).toEqual(["request_mismatch"]);
+  });
+
+  it("one forged observation hash is counted and named", () => {
+    const dir = fixture(observe(RUNS), (m) => {
+      m.raw_observations.find((o) => o.case_id === "case-standard")!.request_sha256 = "f".repeat(64);
+    });
+    const result = verify({ root: dir });
+    expect(failures(result)).toEqual(["request_mismatch"]);
+    expect(result.failures[0]!.detail).toBe(
+      `1 of ${CASES.length * RUNS} observations were judged with a request the working tree would not send; first: "case-standard"`,
+    );
+  });
+});
+
 describe("verify: resolved_model_id", () => {
-  it("re-stamped model swap is caught", () => {
+  it("resolved_model_id that is not the model_id component's model is manifest_invalid", () => {
     const dir = fixture();
     const served = loadEvaluatorConfig(dir).model_id;
     editJson(join(dir, "evaluator.config.json"), (c) => {
       c.model_id = "gpt-5.4-2026-09-01";
     });
-    // Components and id re-stamped to the new model; the evidence still says
-    // it was served by the old one.
-    writeManifest(dir, observe(2), (m) => {
+    // Components, id and request hashes all re-stamped to the new model; only
+    // resolved_model_id still names the old one.
+    writeManifest(dir, observe(RUNS), (m) => {
       m.resolved_model_id = served;
     });
-    expect(failures(verify({ root: dir }))).toContain("manifest_invalid/resolved_model_id");
+    expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid/resolved_model_id"]);
   });
 
   it("empty resolved_model_id is caught", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.resolved_model_id = "";
     });
     expect(failures(verify({ root: dir }))).toContain("manifest_invalid/resolved_model_id");
@@ -423,7 +522,7 @@ describe("verify: canonical form", () => {
   });
 
   it("observations out of canonical order are rejected", () => {
-    const dir = fixture(observe(2), (m) => {
+    const dir = fixture(observe(RUNS), (m) => {
       m.raw_observations.reverse();
     });
     expect(failures(verify({ root: dir }))).toEqual(["manifest_invalid"]);
@@ -477,6 +576,16 @@ describe("loadCorpus", () => {
     writeFileSync(path, `${JSON.stringify({ ...CASES[0], human_label: "invalid_judge_output" })}\n`);
     expect(() => loadCorpus(path)).toThrow(/human_label/);
   });
+
+  it("rejects a pass case with critical severity", () => {
+    const dir = mkdtempSync(join(tmpdir(), "judgelock-corpus-"));
+    fixtures.push(dir);
+    const path = join(dir, "cases.jsonl");
+    writeFileSync(path, `${JSON.stringify({ ...CASES[0], human_label: "pass", human_severity: "critical" })}\n`);
+    expect(() => loadCorpus(path)).toThrow(
+      "corpus line 1: case case-pass is labeled pass with severity critical; the rubric always uses standard for pass",
+    );
+  });
 });
 
 describe("checkThresholds", () => {
@@ -521,8 +630,10 @@ describe("computeResults", () => {
     labels.map((label, run_index) => ({
       case_id,
       run_index,
+      request_sha256: "0".repeat(64),
       verdict: { label, severity: "standard", evidence: "" },
       raw_judge_response: "",
+      response: { id: "", finish_reason: "stop", refusal: null },
     }));
 
   it("matches a hand-computed example", () => {
@@ -545,11 +656,65 @@ describe("computeResults", () => {
     //   standard): 4 observations, 3 judged pass (B run 1, C both).
     // invalid_output_rate: 1 of 10 (D run 0).
     // self_consistency: A, C, E single-label; B, D mixed: 3 of 5 cases.
+    // false_pass_rate: non-pass cases B, C, D: 6 observations, 4 judged pass
+    //   (B run 1, C both, D run 1).
+    // severity_agreement: non-pass observations judged neither pass nor
+    //   invalid: only B run 0 (severity standard vs human critical): 0 of 1.
     expect(computeResults(observations, cases)).toStrictEqual({
       agreement: 0.5,
       critical_miss_rate: 0.75,
       invalid_output_rate: 0.1,
       self_consistency: 0.6,
+      false_pass_rate: 4 / 6,
+      severity_agreement: 0,
+    });
+  });
+
+  it("report-only metrics match a hand-computed example", () => {
+    const sv = (case_id: string, verdicts: [Verdict["label"], Verdict["severity"]][]): Observation[] =>
+      verdicts.map(([label, severity], run_index) => ({
+        ...obs(case_id, [label])[0]!,
+        run_index,
+        verdict: { label, severity, evidence: "" },
+      }));
+    const cases = [
+      mk("P", "pass", "standard"),
+      mk("X", "incorrect", "critical"),
+      mk("Y", "unsupported", "standard"),
+      mk("Z", "incomplete", "critical"),
+    ];
+    const observations = [
+      ...sv("P", [["pass", "standard"], ["pass", "standard"], ["incorrect", "critical"]]),
+      ...sv("X", [["incorrect", "critical"], ["pass", "standard"], ["unsupported", "standard"]]),
+      ...sv("Y", [["unsupported", "standard"], ["invalid_judge_output", "standard"], ["pass", "standard"]]),
+      ...sv("Z", [["incomplete", "standard"], ["incomplete", "critical"], ["incorrect", "critical"]]),
+    ];
+    // agreement: P 2 + X 1 + Y 1 + Z 2 = 6 of 12.
+    // critical_miss_rate: X and Z, 6 observations, 1 judged pass (X run 1).
+    // invalid_output_rate: 1 of 12 (Y run 1).
+    // self_consistency: every case mixed: 0 of 4.
+    // false_pass_rate: P excluded (human pass); X, Y, Z are 9 observations,
+    //   2 judged pass (X run 1, Y run 2): 2/9.
+    // severity_agreement: X0 (critical = critical, yes), X2 (standard vs
+    //   critical, no), Y0 (standard = standard, yes), Z0 (standard vs critical,
+    //   no), Z1 (yes), Z2 (yes). Y1 invalid and X1, Y2 pass are excluded, and P
+    //   is excluded although its run 2 is a non-pass label: 4 of 6.
+    expect(computeResults(observations, cases)).toStrictEqual({
+      agreement: 0.5,
+      critical_miss_rate: 1 / 6,
+      invalid_output_rate: 1 / 12,
+      self_consistency: 0,
+      false_pass_rate: 2 / 9,
+      severity_agreement: 4 / 6,
+    });
+
+    // Every non-pass observation judged pass: severity_agreement has no
+    // denominator and is omitted; false_pass_rate is 1.
+    expect(computeResults(obs("X", ["pass"]), [mk("X", "incorrect", "critical")])).toStrictEqual({
+      agreement: 0,
+      critical_miss_rate: 1,
+      invalid_output_rate: 0,
+      false_pass_rate: 1,
     });
   });
 
@@ -581,8 +746,10 @@ describe("checkCoverage", () => {
   const ob = (case_id: string, run_index: number): Observation => ({
     case_id,
     run_index,
+    request_sha256: "0".repeat(64),
     verdict: { label: "pass", severity: "standard", evidence: "" },
     raw_judge_response: "",
+    response: { id: "", finish_reason: "stop", refusal: null },
   });
 
   it("is clean on exact coverage", () => {

@@ -55,7 +55,7 @@ function readUtf8(path: string): string {
 }
 
 function readJson(path: string): unknown {
-  return JSON.parse(readUtf8(path));
+  return JSON.parse(normalizeBlob(readUtf8(path)));
 }
 
 /**
@@ -93,6 +93,11 @@ export function loadEvaluatorConfig(root: string): EvaluatorConfig {
   const rubric = normalizeBlob(readUtf8(join(root, RUBRIC_PATH)));
   const judge_prompt_template = normalizeBlob(readUtf8(join(root, PROMPT_PATH)));
   const runtime = loadEvaluatorRuntimeConfig(root);
+  if (runtime.provider === "openai" && runtime.decoding.top_k !== undefined) {
+    throw new Error(
+      "top_k is not supported by the OpenAI judge API and would be hashed but never sent",
+    );
+  }
   const output_schema = readJson(join(root, SCHEMA_PATH));
 
   const implementation_digest = computeImplementationDigest(
@@ -155,6 +160,11 @@ export function loadCorpus(path: string): GoldenCase[] {
     }
 
     const row = GoldenCaseSchema.parse(parsed);
+    if (row.human_label === "pass" && row.human_severity === "critical") {
+      throw new Error(
+        `corpus line ${index + 1}: case ${row.id} is labeled pass with severity critical; the rubric always uses standard for pass`,
+      );
+    }
     if (seenIds.has(row.id)) {
       throw new Error(`corpus: duplicate case id ${row.id}`);
     }

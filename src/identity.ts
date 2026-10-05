@@ -99,7 +99,11 @@ export function componentHashes(
     judge_prompt_template: hashBlob(config.judge_prompt_template),
     model_id: hashBlob(config.model_id),
     decoding: hashJson(config.decoding),
-    output_schema: hashJson(config.output_schema),
+    // Order-preserving, deliberately not canonicalJson: the request sends the
+    // schema in file order and structured outputs generate in that order, so
+    // reordering properties changes verdicts and must move the id. Decoding
+    // stays canonical: the request builds its fields in a fixed order.
+    output_schema: sha256(JSON.stringify(config.output_schema)),
     implementation_digest: hashBlob(config.implementation_digest),
   };
 }

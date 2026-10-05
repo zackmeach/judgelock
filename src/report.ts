@@ -1,10 +1,15 @@
-import type { GoldenCase, Manifest, Observation, Threshold } from "./types.ts";
-import { checkThresholds } from "./verify.ts";
+import type { GoldenCase, Manifest, Observation, Threshold, VerifyFailure } from "./types.ts";
+import { checkRuns, checkThresholds } from "./verify.ts";
+
+/** Measured and shown, never gated: no threshold applies to these. */
+const REPORT_ONLY_METRICS = ["false_pass_rate", "severity_agreement"];
 
 export interface ReportInput {
   manifest: Manifest;
   cases: GoldenCase[];
   runs: number;
+  /** validation/thresholds.json runs: the only promotable runs per case. */
+  requiredRuns: number;
   configuredModelId: string;
   generatedAt: Date;
   /** sha256 of the exact candidate manifest bytes this report describes. */
@@ -28,11 +33,16 @@ export function thresholdRows(manifest: Manifest): ThresholdRow[] {
   }));
 }
 
-export function verdictLine(rows: ThresholdRow[]): string {
+/** Eligible only when every threshold passes and checkRuns found nothing. */
+export function verdictLine(rows: ThresholdRow[], runProblems: VerifyFailure[]): string {
   const failed = rows.filter((r) => !r.pass).length;
-  return failed === 0
+  const reasons = [
+    ...(failed > 0 ? [`fails ${failed} threshold(s)`] : []),
+    ...runProblems.map((p) => p.detail),
+  ];
+  return reasons.length === 0
     ? "meets every threshold — eligible for promotion"
-    : `fails ${failed} threshold(s) — do not promote`;
+    : `${reasons.join("; ")} — do not promote`;
 }
 
 /**
@@ -60,6 +70,7 @@ export function renderReport({
   manifest,
   cases,
   runs,
+  requiredRuns,
   configuredModelId,
   generatedAt,
   candidateSha256,
@@ -83,7 +94,13 @@ export function renderReport({
   }
   const invalid = manifest.raw_observations
     .filter((o) => o.verdict.label === "invalid_judge_output")
-    .map((o) => [cell(o.case_id), String(o.run_index), cell(o.raw_judge_response)]);
+    .map((o) => [
+      cell(o.case_id),
+      String(o.run_index),
+      cell(o.response.finish_reason ?? "(none)"),
+      cell(o.response.refusal ?? "(none)"),
+      cell(o.raw_judge_response),
+    ]);
 
   const rows = thresholdRows(manifest);
   return [
@@ -118,7 +135,19 @@ export function renderReport({
       ]),
     ),
     "",
-    `**Verdict:** ${verdictLine(rows)}.`,
+    `**Verdict:** ${verdictLine(rows, checkRuns(manifest.raw_observations, requiredRuns))}.`,
+    "",
+    "## Report-only metrics",
+    "",
+    "Measured, not gated: no threshold applies.",
+    "",
+    ...table(
+      ["metric", "value"],
+      REPORT_ONLY_METRICS.map((name) => [
+        name,
+        Object.hasOwn(manifest.results, name) ? String(manifest.results[name]) : "absent",
+      ]),
+    ),
     "",
     "## Disagreements",
     "",
@@ -130,7 +159,7 @@ export function renderReport({
     "",
     "## Invalid judge outputs",
     "",
-    ...table(["case", "run", "raw response"], invalid),
+    ...table(["case", "run", "finish_reason", "refusal", "raw response"], invalid),
     "",
   ].join("\n");
 }

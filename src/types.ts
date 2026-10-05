@@ -52,7 +52,11 @@ export const EvaluatorConfigSchema = z.object({
    */
   model_id: z.string(),
   decoding: DecodingConfigSchema,
-  /** Verbatim contents of schemas/verdict.schema.json. */
+  /**
+   * schemas/verdict.schema.json as parsed JSON (not its verbatim text). Key
+   * order is preserved and hashed: the judge request sends the schema in this
+   * order, and OpenAI structured outputs generate properties in schema order.
+   */
   output_schema: z.unknown(),
   /**
    * sha256 over the scoring-path sources plus the dependency lockfile.
@@ -117,9 +121,26 @@ export interface ReferenceDocument {
 export const ObservationSchema = z.object({
   case_id: z.string(),
   run_index: z.number().int().nonnegative(),
+  /**
+   * sha256 of the request body bytes the SDK actually sent, captured at the
+   * transport by callOpenAiJudge. verify compares it to
+   * requestSha256(buildJudgeRequest(...)) rebuilt from the working tree, so
+   * evidence is bound to the request that produced it, not only to the
+   * component hashes.
+   */
+  request_sha256: z.string().regex(/^[0-9a-f]{64}$/),
   verdict: VerdictSchema,
   /** Unparsed judge response text, kept for audit and reparsing. */
   raw_judge_response: z.string(),
+  /**
+   * Response metadata, so a refusal and a truncation (both with empty
+   * raw_judge_response) stay distinguishable in the audit trail.
+   */
+  response: z.object({
+    id: z.string(),
+    finish_reason: z.string().nullable(),
+    refusal: z.string().nullable(),
+  }),
 });
 export type Observation = z.infer<typeof ObservationSchema>;
 
@@ -145,6 +166,12 @@ export type Threshold = z.infer<typeof ThresholdSchema>;
 /** The committed gate: validation/thresholds.json. */
 export const ThresholdsFileSchema = z.object({
   rationale: z.string().min(1),
+  /**
+   * Repeats per case that promotable evidence must have. Pinned, not an
+   * operator choice: fewer repeats make self_consistency and the zero
+   * critical-miss bound easier to meet.
+   */
+  runs: z.number().int().min(2),
   thresholds: z.array(ThresholdSchema).min(1),
 });
 export type ThresholdsFile = z.infer<typeof ThresholdsFileSchema>;
@@ -190,6 +217,7 @@ export interface VerifyFailure {
   kind:
     | "evaluator_id_mismatch"
     | "corpus_hash_mismatch"
+    | "request_mismatch"
     | "results_mismatch"
     | "threshold_violation"
     | "manifest_invalid";
