@@ -16,12 +16,17 @@ export interface JudgeResponse {
   raw: string;
   /** The model id the API reported actually serving this request. */
   resolved_model_id: string;
-  /** The API's response id. */
+  /** The API's response id; "" when it reported none, which validate rejects. */
   response_id: string;
   /** choices[0].finish_reason: "length" marks a truncation. */
   finish_reason: string | null;
   /** choices[0].message.refusal: set when the model refused. */
   refusal: string | null;
+  /**
+   * sha256 hex of the request body bytes actually sent, captured at the
+   * transport. On an SDK retry, the last body sent.
+   */
+  request_sha256: string;
 }
 
 export interface JudgeCallOptions {
@@ -139,8 +144,9 @@ export function buildJudgeRequest(
 }
 
 /**
- * sha256 hex of JSON.stringify(request): the body bytes the SDK sends. No
- * normalization, so any change to what is sent changes the hash.
+ * sha256 hex of JSON.stringify(request): what the SDK sends for this request.
+ * No normalization, so any change to the request changes the hash. verify
+ * compares it to the hash callOpenAiJudge captured from the bytes sent.
  */
 export function requestSha256(
   request: OpenAI.ChatCompletionCreateParamsNonStreaming,
@@ -153,10 +159,24 @@ async function callOpenAiJudge(
   documents: ReferenceDocument[],
   testCase: GoldenCase,
 ): Promise<JudgeResponse> {
-  const client = new OpenAI({ apiKey: requireEnv(OPENAI_ENV_KEY) });
+  // Hash the body the SDK actually sends, not the request we meant to send:
+  // anything the transport adds or changes then shows up in the evidence.
+  let request_sha256: string | undefined;
+  const hashingFetch: typeof fetch = (input, init) => {
+    const body = init?.body;
+    if (typeof body !== "string") {
+      throw new Error("judge request body is not a string; refusing to send what cannot be hashed");
+    }
+    request_sha256 = createHash("sha256").update(body, "utf8").digest("hex");
+    return fetch(input, init);
+  };
+  const client = new OpenAI({ apiKey: requireEnv(OPENAI_ENV_KEY), fetch: hashingFetch });
   const response = await client.chat.completions.create(
     buildJudgeRequest(config, documents, testCase),
   );
+  if (request_sha256 === undefined) {
+    throw new Error("judge response arrived without a request body being sent");
+  }
 
   const choice = response.choices[0];
   const raw = choice?.message?.content ?? "";
@@ -170,6 +190,7 @@ async function callOpenAiJudge(
     response_id: response.id ?? "",
     finish_reason: choice?.finish_reason ?? null,
     refusal: choice?.message?.refusal ?? null,
+    request_sha256,
   };
 }
 

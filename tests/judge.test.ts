@@ -207,7 +207,7 @@ describe("callJudge (openai)", () => {
     }
   });
 
-  it("sends exactly buildJudgeRequest's bytes and maps id, finish_reason and refusal", async () => {
+  it("sends exactly buildJudgeRequest's bytes, records the hash of the bytes sent, and maps the response", async () => {
     // No network: fetch is stubbed, and the base URL points at a closed local
     // port in case the stub were ever bypassed.
     process.env.OPENAI_API_KEY = "sk-test-not-a-real-key";
@@ -247,15 +247,15 @@ describe("callJudge (openai)", () => {
 
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toBe(JSON.stringify(buildJudgeRequest(config, documents, testCase)));
-    expect(createHash("sha256").update(bodies[0]!, "utf8").digest("hex")).toBe(
-      requestSha256(buildJudgeRequest(config, documents, testCase)),
-    );
+    const sentSha256 = createHash("sha256").update(bodies[0]!, "utf8").digest("hex");
+    expect(sentSha256).toBe(requestSha256(buildJudgeRequest(config, documents, testCase)));
     expect(response).toStrictEqual({
       raw: "",
       resolved_model_id: "served-model",
       response_id: "chatcmpl-test",
       finish_reason: "stop",
       refusal: "I can't help with that.",
+      request_sha256: sentSha256,
     });
   });
 });

@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: Repeats per case; only the runs pinned in validation/thresholds.json (3) is promotable
+        description: Repeats per case; empty uses the runs pinned in validation/thresholds.json, the only promotable count
         required: false
-        default: "3"
+        default: ""
 
 permissions:
   contents: write
@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -30,8 +32,13 @@ jobs:
       - run: npm ci --ignore-scripts
 
       # The input reaches the shell only as an env var; inlining it would be
-      # shell injection with a token that can push to the branch.
-      - run: npm run validate -- --runs "$RUNS"
+      # shell injection. Empty: the CLI default, read from thresholds.json.
+      - run: |
+          if [ -n "$RUNS" ]; then
+            npm run validate -- --runs "$RUNS"
+          else
+            npm run validate
+          fi
         env:
           RUNS: ${{ inputs.runs }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -45,12 +52,15 @@ jobs:
           path: validation/
 
       # Committed to the branch: artifacts expire, and a validation record has
-      # to stay permanently linkable.
+      # to stay permanently linkable. The push token is in this step's env
+      # only; checkout does not persist it for the earlier steps.
       - name: Commit candidate manifest and report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add validation/
           git diff --staged --quiet && echo "no changes to commit" && exit 0
           git commit -m "validate: candidate manifest from run ${{ github.run_id }}"
-          git push
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"

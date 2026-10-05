@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import {
   APPROVED_MANIFEST_PATH,
@@ -33,7 +33,8 @@ Options:
                  pinned in validation/thresholds.json, the only promotable count.
   --out <path>   validate only. Candidate manifest path, relative to --root.
                  Default: validation/candidate-manifest.json
-                 Must be a .json file inside validation/, and not
+                 Must be a .json file in an existing directory inside
+                 validation/, not a link and not reached through one, and not
                  validation/approved-manifest.json or validation/thresholds.json.
   -h, --help     Show this message.
 `;
@@ -47,6 +48,53 @@ const { values, positionals } = parseArgs({
     help: { type: "boolean", short: "h", default: false },
   },
 });
+
+/** Case-insensitive where the default filesystem is. */
+const fold = (p: string): string =>
+  process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p;
+
+/** True when `p` is `dir` or inside it. */
+const within = (dir: string, p: string): boolean => {
+  const rel = relative(fold(dir), fold(p));
+  return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+};
+
+/**
+ * Why --out is refused, or undefined. Lexical checks, then the filesystem: a
+ * symlink or junction under validation/ must not redirect the write onto the
+ * approved manifest, the thresholds, or anything outside validation/.
+ * ponytail: checked once before the run, not at write time; a link swapped
+ * in during the run is not caught.
+ */
+function outProblem(root: string, out: string): string | undefined {
+  const outPath = resolve(root, out);
+  const validationDir = resolve(root, "validation");
+  const reserved = [APPROVED_MANIFEST_PATH, THRESHOLDS_PATH].map((p) => resolve(root, p));
+  const reservedMessage = `--out must not be ${APPROVED_MANIFEST_PATH} or ${THRESHOLDS_PATH}; promotion is a reviewed copy in a PR`;
+  if (!within(validationDir, outPath) || !fold(outPath).endsWith(".json")) {
+    return `--out must be a .json file inside validation/, got ${JSON.stringify(out)}`;
+  }
+  if (reserved.some((p) => fold(p) === fold(outPath))) return reservedMessage;
+  if (process.platform === "win32" && basename(outPath).includes(":")) {
+    return `--out must not contain ":" in its file name (an NTFS alternate data stream), got ${JSON.stringify(out)}`;
+  }
+  if (lstatSync(outPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    return `--out must not be a symbolic link or junction, got ${JSON.stringify(out)}`;
+  }
+  if (!existsSync(validationDir) || !existsSync(dirname(outPath))) {
+    return `--out must be in an existing directory under validation/, got ${JSON.stringify(out)}`;
+  }
+  const realValidation = realpathSync(validationDir);
+  const realOut = join(realpathSync(dirname(outPath)), basename(outPath));
+  if (!within(realValidation, realOut)) {
+    return `--out must not leave validation/ through a link: ${JSON.stringify(out)} resolves to ${JSON.stringify(realOut)}`;
+  }
+  const realReserved = reserved.map((p) =>
+    existsSync(p) ? realpathSync(p) : join(realValidation, basename(p)),
+  );
+  if (realReserved.some((p) => fold(p) === fold(realOut))) return reservedMessage;
+  return undefined;
+}
 
 const command = positionals[0] ?? "shell";
 const root = values.root ?? ".";
@@ -71,28 +119,11 @@ switch (command) {
   case "validate": {
     // Failure paths set exitCode and break rather than process.exit: SDK
     // sockets may still be open, and exiting under them aborts on Windows.
-    // Case-insensitive where the default filesystem is.
-    const fold = (p: string): string =>
-      process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p;
-    const outPath = resolve(root, values.out ?? "validation/candidate-manifest.json");
-    const inValidation = relative(fold(resolve(root, "validation")), fold(outPath));
-    if (
-      inValidation === "" ||
-      inValidation === ".." ||
-      inValidation.startsWith(`..${sep}`) ||
-      isAbsolute(inValidation) ||
-      !fold(outPath).endsWith(".json")
-    ) {
-      console.error(
-        `judgelock validate: --out must be a .json file inside validation/, got ${JSON.stringify(values.out)}`,
-      );
-      process.exitCode = 1;
-      break;
-    }
-    if ([APPROVED_MANIFEST_PATH, THRESHOLDS_PATH].some((p) => fold(resolve(root, p)) === fold(outPath))) {
-      console.error(
-        `judgelock validate: --out must not be ${APPROVED_MANIFEST_PATH} or ${THRESHOLDS_PATH}; promotion is a reviewed copy in a PR`,
-      );
+    const out = values.out ?? "validation/candidate-manifest.json";
+    const outPath = resolve(root, out);
+    const problem = outProblem(root, out);
+    if (problem !== undefined) {
+      console.error(`judgelock validate: ${problem}`);
       process.exitCode = 1;
       break;
     }

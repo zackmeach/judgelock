@@ -122,9 +122,11 @@ export const ObservationSchema = z.object({
   case_id: z.string(),
   run_index: z.number().int().nonnegative(),
   /**
-   * sha256 of the exact request body sent to the judge (requestSha256 in
-   * judge.ts). verify recomputes it from the working tree, so evidence is
-   * bound to the request that produced it, not only to the component hashes.
+   * sha256 of the request body bytes the SDK actually sent, captured at the
+   * transport by callOpenAiJudge. verify compares it to
+   * requestSha256(buildJudgeRequest(...)) rebuilt from the working tree, so
+   * evidence is bound to the request that produced it, not only to the
+   * component hashes.
    */
   request_sha256: z.string().regex(/^[0-9a-f]{64}$/),
   verdict: VerdictSchema,

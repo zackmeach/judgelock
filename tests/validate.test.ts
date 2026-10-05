@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,8 +70,12 @@ function fixture(): string {
 const honestRaw = (c: GoldenCase): string =>
   JSON.stringify({ label: c.human_label, severity: c.human_severity, evidence: "x" });
 
+/** A fake's reply; request_sha256 defaults to the hash of the honest request. */
+type FakeReply = Omit<JudgeResponse, "request_sha256"> & { request_sha256?: string };
+type JudgeRequest = ReturnType<typeof buildJudgeRequest>;
+
 /** An honest response from the configured model; `over` replaces fields. */
-const reply = (c: GoldenCase, over: Partial<JudgeResponse> = {}): JudgeResponse => ({
+const reply = (c: GoldenCase, over: Partial<FakeReply> = {}): FakeReply => ({
   raw: honestRaw(c),
   resolved_model_id: MODEL,
   response_id: `resp-${c.id}`,
@@ -79,12 +84,19 @@ const reply = (c: GoldenCase, over: Partial<JudgeResponse> = {}): JudgeResponse 
   ...over,
 });
 
-/** Fake judge: records every call; `respond` decides the response per case. */
-function fakeJudge(respond: (c: GoldenCase) => Promise<JudgeResponse> | JudgeResponse = (c) => reply(c)) {
+/**
+ * Fake judge: records every call; `respond` decides the response per case and
+ * sees the request an honest transport would send. Unless the reply says
+ * otherwise, it reports the hash of that request as the bytes sent.
+ */
+function fakeJudge(
+  respond: (c: GoldenCase, request: JudgeRequest) => Promise<FakeReply> | FakeReply = (c) => reply(c),
+) {
   const calls: { caseId: string; provider: string | undefined }[] = [];
-  const judge: JudgeFn = async (_config, _documents, testCase, options) => {
+  const judge: JudgeFn = async (config, documents, testCase, options) => {
     calls.push({ caseId: testCase.id, provider: options?.provider });
-    return respond(testCase);
+    const request = buildJudgeRequest(config, documents, testCase);
+    return { request_sha256: requestSha256(request), ...(await respond(testCase, request)) };
   };
   return { judge, calls };
 }
@@ -117,6 +129,27 @@ describe("validate", () => {
     const result = verify({ root: dir });
     expect(result.failures).toEqual([]);
     expect(result.ok).toBe(true);
+  });
+
+  it("records the judge-reported hash of the bytes sent: a transport that adds a field fails verify", async () => {
+    const dir = fixture();
+    // The transport sent the request plus a field buildJudgeRequest does not
+    // build; the judge reports the hash of what it actually sent.
+    const { judge } = fakeJudge((c, request) =>
+      reply(c, { request_sha256: requestSha256({ ...request, seed: 7 }) }),
+    );
+    const manifest = await validate({ root: dir, runs: 3, judge });
+    const config = loadEvaluatorConfig(dir);
+    const documents = loadReferenceDocuments(dir);
+    for (const o of manifest.raw_observations) {
+      const request = buildJudgeRequest(config, documents, CASES.find((c) => c.id === o.case_id)!);
+      expect(o.request_sha256).toBe(requestSha256({ ...request, seed: 7 }));
+    }
+
+    writeFileSync(join(dir, APPROVED_MANIFEST_PATH), serializeManifest(manifest));
+    const result = verify({ root: dir });
+    expect(result.failures.map((f) => f.kind)).toEqual(["request_mismatch"]);
+    expect(result.failures[0]!.detail).toMatch(/^12 of 12 observations were judged with a request/);
   });
 
   it("records non-JSON judge output as invalid_judge_output, byte for byte", async () => {
@@ -163,6 +196,18 @@ describe("validate", () => {
     // Jobs in order: case-pass r0, case-pass r1, case-critical r0, ... (8 total).
     await expect(validate({ root: fixture(), runs: 2, judge, concurrency: 1 })).rejects.toThrow(
       `judge API served "gpt-5.4" but the configured model_id is ${JSON.stringify(MODEL)}`,
+    );
+    for (let i = 0; i < 5; i++) await tick();
+    expect(calls).toHaveLength(3);
+  });
+
+  it.each(["", "  "])("aborts on a response with no response id (%j) without starting further jobs", async (id) => {
+    const { judge, calls } = fakeJudge((c) =>
+      reply(c, c.id === "case-critical" ? { response_id: id } : {}),
+    );
+    // Jobs in order: case-pass r0, case-pass r1, case-critical r0, ... (8 total).
+    await expect(validate({ root: fixture(), runs: 2, judge, concurrency: 1 })).rejects.toThrow(
+      "judge API reported no response id on case case-critical run 0",
     );
     for (let i = 0; i < 5; i++) await tick();
     expect(calls).toHaveLength(3);
@@ -370,6 +415,26 @@ describe("renderReport", () => {
     expect(out.slice(out.indexOf("## Disagreements"))).toMatch(/## Disagreements\n\nNone\./);
   });
 
+  it("lists invalid judge outputs with finish_reason and refusal, escaped", () => {
+    const dir = fixture();
+    const invalid: Verdict = { label: "invalid_judge_output", severity: "standard", evidence: "" };
+    const manifest = scripted(
+      dir,
+      Object.fromEntries(
+        CASES.map((c) => [c.id, c.id === "case-standard" ? [invalid, invalid] : [honest(c), honest(c)]]),
+      ),
+    );
+    const [refused, truncated] = manifest.raw_observations.filter((o) => o.case_id === "case-standard");
+    refused!.raw_judge_response = "";
+    refused!.response = { id: "r0", finish_reason: "stop", refusal: "I can't | <won't>" };
+    truncated!.raw_judge_response = "";
+    truncated!.response = { id: "r1", finish_reason: "length", refusal: null };
+    const section = render(manifest).split("## Invalid judge outputs")[1]!;
+    expect(section).toContain("| case | run | finish_reason | refusal | raw response |");
+    expect(section).toContain("| case-standard | 0 | stop | I can't \\| &lt;won't> | (empty) |");
+    expect(section).toContain("| case-standard | 1 | length | (none) | (empty) |");
+  });
+
   it("an honest candidate below the pinned runs is not eligible, though every threshold passes", () => {
     const dir = fixture();
     const manifest = scripted(
@@ -455,6 +520,72 @@ describe("cli validate", () => {
       expect(reports(dir)).toEqual([]);
     },
   );
+
+  it("--out in a directory that does not exist is refused before any call", () => {
+    const dir = fixture();
+    const result = cli(dir, "--out", "validation/nope/x.json");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--out must be in an existing directory under validation/, got "validation/nope/x.json"');
+  });
+
+  it.skipIf(process.platform !== "win32")("--out with \":\" in the file name (NTFS stream) is refused", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, APPROVED_MANIFEST_PATH), "approved\n");
+    const result = cli(dir, "--out", "validation/approved-manifest.json:x.json");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--out must not contain ":" in its file name');
+    expect(readFileSync(join(dir, APPROVED_MANIFEST_PATH), "utf8")).toBe("approved\n");
+  });
+
+  /**
+   * Directory link: a junction on Windows (no privilege needed), a directory
+   * symlink elsewhere. Skips only if a non-Windows platform refuses with EPERM.
+   */
+  function dirLink(target: string, path: string, skip: () => void): void {
+    try {
+      symlinkSync(target, path, "junction");
+    } catch (err) {
+      if (process.platform !== "win32" && (err as NodeJS.ErrnoException).code === "EPERM") skip();
+      throw err;
+    }
+  }
+
+  it("--out through a directory link out of validation/ is refused; the target is untouched", (ctx) => {
+    const dir = fixture();
+    dirLink(join(dir, "schemas"), join(dir, "validation", "j"), () => ctx.skip());
+    const schema = join(dir, "schemas", "verdict.schema.json");
+    const before = readFileSync(schema, "utf8");
+    const result = cli(dir, "--out", "validation/j/verdict.schema.json");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--out must not leave validation/ through a link");
+    expect(readFileSync(schema, "utf8")).toBe(before);
+    expect(reports(dir)).toEqual([]);
+  });
+
+  it("--out through a directory link back into validation/ cannot reach the approved manifest", (ctx) => {
+    const dir = fixture();
+    writeFileSync(join(dir, APPROVED_MANIFEST_PATH), "approved\n");
+    dirLink(join(dir, "validation"), join(dir, "validation", "k"), () => ctx.skip());
+    for (const out of ["validation/k/approved-manifest.json", "validation/k/thresholds.json"]) {
+      const result = cli(dir, "--out", out);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "--out must not be validation/approved-manifest.json or validation/thresholds.json",
+      );
+    }
+    expect(readFileSync(join(dir, APPROVED_MANIFEST_PATH), "utf8")).toBe("approved\n");
+    expect(reports(dir)).toEqual([]);
+  });
+
+  it("--out that is itself a link is refused", (ctx) => {
+    const dir = fixture();
+    // A directory link, so it needs no privilege on Windows; the refusal is
+    // on the link itself, whatever it points at.
+    dirLink(join(dir, "schemas"), join(dir, "validation", "c.json"), () => ctx.skip());
+    const result = cli(dir, "--out", "validation/c.json");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--out must not be a symbolic link or junction, got "validation/c.json"');
+  });
 
   it("--out with an absolute path outside the root is refused before any call", () => {
     const dir = fixture();

@@ -14,13 +14,7 @@ import {
   computeCorpusHash,
   computeEvaluatorId,
 } from "./identity.ts";
-import {
-  buildJudgeRequest,
-  callJudge,
-  parseVerdict,
-  requestSha256,
-  type JudgeResponse,
-} from "./judge.ts";
+import { callJudge, parseVerdict, type JudgeResponse } from "./judge.ts";
 import {
   ManifestSchema,
   type EvaluatorConfig,
@@ -248,12 +242,11 @@ export function buildManifest(input: BuildManifestInput): Manifest {
  * retries) aborts the run: no new calls are started, calls already in flight
  * are discarded, and the returned promise rejects naming the case and run.
  * A throwing onObservation aborts the same way, and so does the first
- * response that reports no served model or a served model other than the
- * configured model_id (verify would reject that candidate).
+ * response that reports no response id, no served model, or a served model
+ * other than the configured model_id (verify would reject that candidate).
  *
- * Each observation records the sha256 of the request validate would send for
- * its case (requestSha256(buildJudgeRequest(...)), computed here, not by the
- * judge) and the response's id, finish_reason and refusal.
+ * Each observation records the judge-reported sha256 of the request body
+ * actually sent, and the response's id, finish_reason and refusal.
  *
  * Any integer runs >= 1 is accepted: exploration runs are allowed, but only
  * evidence with validation/thresholds.json's runs is promotable (verify).
@@ -293,7 +286,6 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
   const runJob = async ({ testCase, run_index }: (typeof jobs)[number]): Promise<void> => {
     const where = `case ${testCase.id} run ${run_index}`;
     try {
-      const request_sha256 = requestSha256(buildJudgeRequest(config, documents, testCase));
       let response: JudgeResponse;
       try {
         response = await judge(config, documents, testCase, { provider });
@@ -302,6 +294,9 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
         throw new Error(`judge call failed on ${where}: ${message}`, { cause: err });
       }
       if (failed) return;
+      if (response.response_id.trim() === "") {
+        throw new Error(`judge API reported no response id on ${where}`);
+      }
       if (response.resolved_model_id.trim() === "") {
         throw new Error(`judge API reported no served model on ${where}`);
       }
@@ -313,7 +308,7 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
       const observation: Observation = {
         case_id: testCase.id,
         run_index,
-        request_sha256,
+        request_sha256: response.request_sha256,
         verdict: parseVerdict(response.raw),
         raw_judge_response: response.raw,
         response: {

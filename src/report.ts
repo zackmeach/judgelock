@@ -94,7 +94,13 @@ export function renderReport({
   }
   const invalid = manifest.raw_observations
     .filter((o) => o.verdict.label === "invalid_judge_output")
-    .map((o) => [cell(o.case_id), String(o.run_index), cell(o.raw_judge_response)]);
+    .map((o) => [
+      cell(o.case_id),
+      String(o.run_index),
+      cell(o.response.finish_reason ?? "(none)"),
+      cell(o.response.refusal ?? "(none)"),
+      cell(o.raw_judge_response),
+    ]);
 
   const rows = thresholdRows(manifest);
   return [
@@ -153,7 +159,7 @@ export function renderReport({
     "",
     "## Invalid judge outputs",
     "",
-    ...table(["case", "run", "raw response"], invalid),
+    ...table(["case", "run", "finish_reason", "refusal", "raw response"], invalid),
     "",
   ].join("\n");
 }

@@ -47,13 +47,19 @@ What the suite pins:
   plus the component mismatch (or a generic `evaluator_id_mismatch` when only
   evaluator_id was edited).
 
-What re-stamping now takes: each observation carries the sha256 of the exact
-judge request, and verify rebuilds that request from the working tree. A
-re-stamp that passes has to forge every observation's request hash as well
-as evaluator_id and the components, a diff across the whole manifest rather
-than a few lines. That raises the cost and visibility of forgery; it does
-not prevent it. A determined forger can still compute the hashes, and only
-human review of the promotion PR stops them.
+What re-stamping now takes: each observation carries the sha256 of the
+request body the SDK actually sent, and verify rebuilds the request from the
+working tree. A re-stamp over a change to anything the request carries has
+to forge every observation's request hash as well as evaluator_id and the
+components, a diff across the whole manifest rather than a few lines. The
+exception is a change only to the transport (callOpenAiJudge altering the
+body after buildJudgeRequest): old evidence still matches the rebuilt
+request, so re-stamping evaluator_id and implementation_digest passes, and
+the divergence becomes a `request_mismatch` only once evidence is collected
+through the changed transport (pinned in tests/validate.test.ts). This
+raises the cost and visibility of forgery; it does not prevent it. A
+determined forger can still compute the hashes, and only human review of
+the promotion PR stops them.
 
 `npm test` runs without `--passWithNoTests`: a misconfigured glob that finds
 zero tests fails instead of reporting green.
