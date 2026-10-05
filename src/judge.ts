@@ -1,9 +1,9 @@
 import OpenAI from "openai";
 import type { Provider } from "./config.ts";
+import { OPENAI_ENV_KEY, requireEnv } from "./env-file.ts";
 import type {
   EvaluatorConfig,
   GoldenCase,
-  Observation,
   Verdict,
 } from "./types.ts";
 import { VerdictSchema } from "./types.ts";
@@ -65,21 +65,11 @@ function judgeOutputSchema(outputSchema: unknown): Record<string, unknown> {
   return schema;
 }
 
-function requireOpenAiKey(): string {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "OPENAI_API_KEY is not set; required for OpenAI judge calls",
-    );
-  }
-  return apiKey;
-}
-
 async function callOpenAiJudge(
   config: EvaluatorConfig,
   testCase: GoldenCase,
 ): Promise<JudgeResponse> {
-  const client = new OpenAI({ apiKey: requireOpenAiKey() });
+  const client = new OpenAI({ apiKey: requireEnv(OPENAI_ENV_KEY) });
   const prompt = renderPrompt(
     config.judge_prompt_template,
     config.rubric,
@@ -167,22 +157,4 @@ export function parseVerdict(raw: string): Verdict {
   }
 
   return result.data;
-}
-
-/** Runs one case once and records the result as an Observation. */
-export async function runCase(
-  config: EvaluatorConfig,
-  testCase: GoldenCase,
-  runIndex: number,
-  options?: JudgeCallOptions,
-): Promise<Observation> {
-  const { raw } = await callJudge(config, testCase, options);
-  const verdict = parseVerdict(raw);
-
-  return {
-    case_id: testCase.id,
-    run_index: runIndex,
-    verdict,
-    raw_judge_response: raw,
-  };
 }

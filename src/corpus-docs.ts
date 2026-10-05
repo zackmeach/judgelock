@@ -60,20 +60,6 @@ export function searchCorpusDocuments(
   return matches;
 }
 
-/**
- * Loads every markdown file in corpus/docs, sorted by filename, as one blob.
- * Each file is prefixed with a header so the model can attribute claims.
- */
-export function loadCorpusDocs(root: string): string {
-  const files = listCorpusDocFiles(root);
-  const parts = files.map((name) => {
-    const path = join(root, CORPUS_DOCS_DIR, name);
-    const content = normalizeBlob(readFileSync(path, "utf8"));
-    return `### ${name}\n\n${content}`;
-  });
-  return parts.join("\n\n---\n\n");
-}
-
 export function describeCorpusDocs(root: string): string {
   const files = listCorpusDocFiles(root);
   return `${files.length} docs in corpus/docs`;

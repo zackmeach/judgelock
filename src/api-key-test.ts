@@ -5,7 +5,7 @@ import {
   OPENAI_ENV_KEY,
   formatEnvKeyStatus,
   getEnvKeyStatus,
-  loadEnvFileIntoProcess,
+  loadEnvFile,
 } from "./env-file.ts";
 
 export interface ApiKeyTestLine {
@@ -72,7 +72,7 @@ async function testAnthropic(): Promise<ApiKeyTestLine> {
 }
 
 export async function runApiKeyTests(root: string): Promise<ApiKeyTestResult> {
-  loadEnvFileIntoProcess(root);
+  loadEnvFile(root);
 
   const lines: ApiKeyTestLine[] = [];
   const failures: string[] = [];

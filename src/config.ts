@@ -6,10 +6,8 @@ import {
   DecodingConfigSchema,
   EvaluatorConfigSchema,
   GoldenCaseSchema,
-  ManifestSchema,
   type EvaluatorConfig,
   type GoldenCase,
-  type Manifest,
 } from "./types.ts";
 
 const RUBRIC_PATH = "rubric/rubric.yaml";
@@ -125,41 +123,4 @@ export function loadCorpus(path: string): GoldenCase[] {
   }
 
   return cases;
-}
-
-/**
- * Reads validation/approved-manifest.json and validates it against
- * ManifestSchema. This is the approved evidence; verify compares against it
- * and never writes to it.
- */
-export function loadApprovedManifest(path: string): Manifest {
-  return ManifestSchema.parse(readJson(path));
-}
-
-/**
- * Reads evaluator.lock.json — the recorded evaluator identity and the
- * per-component hashes that let a mismatch be attributed to a specific
- * component rather than reported as an opaque id change.
- */
-export function loadLockfile(path: string): Record<string, string | null> {
-  const raw = readJson(path) as {
-    evaluator_id?: string | null;
-    components?: Record<string, string | null>;
-    corpus_hash?: string | null;
-    locked_at?: string | null;
-  };
-
-  const out: Record<string, string | null> = {
-    evaluator_id: raw.evaluator_id ?? null,
-    corpus_hash: raw.corpus_hash ?? null,
-    locked_at: raw.locked_at ?? null,
-  };
-
-  if (raw.components) {
-    for (const [key, value] of Object.entries(raw.components)) {
-      out[`components.${key}`] = value ?? null;
-    }
-  }
-
-  return out;
 }

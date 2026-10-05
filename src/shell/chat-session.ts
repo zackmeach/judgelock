@@ -8,7 +8,7 @@ import {
   loadEvaluatorConfig,
   loadEvaluatorRuntimeConfig,
 } from "../config.ts";
-import { reloadEnvFile } from "../env-file.ts";
+import { loadEnvFile } from "../env-file.ts";
 import { callJudge, parseVerdict } from "../judge.ts";
 import type { ChatMessage } from "../provider-chat.ts";
 import type { GoldenCase } from "../types.ts";
@@ -95,12 +95,12 @@ export async function runChatSession(
   ctx: ShellContext,
   initialMessage?: string,
 ): Promise<void> {
-  reloadEnvFile(ctx.root);
+  loadEnvFile(ctx.root);
 
   let session: AgentSession;
   try {
     session = createAgentSession(ctx.root);
-    ctx.writeln(`Medicare enrollment agent: ${describeAgent(ctx.root)}`);
+    ctx.writeln(`Medicare enrollment agent: ${describeAgent(session)}`);
     ctx.writeln(
       "Uses corpus tools (list/read/search). Commands: /grade, /exit",
     );

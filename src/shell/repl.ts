@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { resolve } from "node:path";
-import { loadEnvFileIntoProcess } from "../env-file.ts";
+import { loadEnvFile } from "../env-file.ts";
 import { formatApiKeyStatusBlock } from "../api-key-test.ts";
 import { dispatchLine, type ShellContext } from "./handlers.ts";
 
@@ -13,7 +13,7 @@ const BANNER = `
 
 export async function runShell(root: string): Promise<void> {
   const resolvedRoot = resolve(root);
-  loadEnvFileIntoProcess(resolvedRoot);
+  loadEnvFile(resolvedRoot);
 
   const rl = createInterface({ input, output, terminal: true });
 
