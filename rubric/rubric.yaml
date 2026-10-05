@@ -13,7 +13,7 @@ labels:
       date, deadline, dollar amount, percentage, duration, count, eligibility
       rule, or consequence. One contradicted material claim is enough, even if
       the rest of the answer is right. Saying the documents do not cover
-      something they do cover is incomplete, not incorrect.
+      something they do cover is incomplete, not incorrect or unsupported.
   - id: unsupported
     guidance: >
       The answer makes a material claim the reference documents neither state
