@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: Repeats per case (>1 measures judge self-consistency)
+        description: Repeats per case; must be >= 2 for self_consistency, which the thresholds require
         required: false
-        default: "1"
+        default: "3"
 
 permissions:
   contents: write
