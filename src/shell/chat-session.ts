@@ -7,6 +7,7 @@ import {
 import {
   loadEvaluatorConfig,
   loadEvaluatorRuntimeConfig,
+  loadReferenceDocuments,
 } from "../config.ts";
 import { loadEnvFile } from "../env-file.ts";
 import { callJudge, parseVerdict } from "../judge.ts";
@@ -78,7 +79,8 @@ async function gradeLastExchange(
   };
 
   try {
-    const { raw } = await callJudge(config, testCase, {
+    const documents = loadReferenceDocuments(ctx.root);
+    const { raw } = await callJudge(config, documents, testCase, {
       provider: runtime.provider,
     });
     const verdict = parseVerdict(raw);

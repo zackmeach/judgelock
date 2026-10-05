@@ -40,16 +40,23 @@ export type DecodingConfig = z.infer<typeof DecodingConfigSchema>;
  * recorded separately, deliberately not part of the identity hash.
  */
 export const EvaluatorConfigSchema = z.object({
-  /** Verbatim contents of rubric/rubric.yaml. */
+  /** Contents of rubric/rubric.yaml, through normalizeBlob. */
   rubric: z.string(),
-  /** Verbatim judge prompt template, placeholders unsubstituted. */
+  /** Judge prompt template through normalizeBlob, placeholders unsubstituted. */
   judge_prompt_template: z.string(),
   /** Model identifier as configured, before any server-side resolution. */
   model_id: z.string(),
   decoding: DecodingConfigSchema,
   /** Verbatim contents of schemas/verdict.schema.json. */
   output_schema: z.unknown(),
-  /** sha256 over the scoring module source plus the dependency lockfile. */
+  /**
+   * sha256 over the scoring-path sources plus the dependency lockfile.
+   * src/corpus-docs.ts is deliberately excluded: the files it selects and the
+   * content it loads are captured by corpus_hash, and renderDocuments
+   * canonicalizes order and line endings before the judge sees them. Agent, shell,
+   * verify, and cli code is excluded so subject-agent edits never move
+   * evaluator identity.
+   */
   implementation_digest: z.string(),
 });
 export type EvaluatorConfig = z.infer<typeof EvaluatorConfigSchema>;
@@ -90,6 +97,12 @@ export const GoldenCaseSchema = z.object({
   notes: z.string().optional(),
 });
 export type GoldenCase = z.infer<typeof GoldenCaseSchema>;
+
+/** One corpus/docs file as the judge sees it: filename plus normalized content. */
+export interface ReferenceDocument {
+  filename: string;
+  content: string;
+}
 
 /**
  * One case, one run. The manifest keeps every one of these so that

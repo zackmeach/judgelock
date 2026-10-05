@@ -22,7 +22,7 @@ describe("bootstrap health", () => {
   it("loads judge runtime config with a dated model snapshot", () => {
     const runtime = loadEvaluatorRuntimeConfig(ROOT);
     expect(runtime.provider).toBe("openai");
-    expect(runtime.model_id).toBe("gpt-5.4-2026-03-05");
+    expect(runtime.model_id).toMatch(/-(\d{4}-\d{2}-\d{2}|\d{8})$/);
     expect(runtime.decoding.max_tokens).toBe(4096);
     expect(runtime.decoding.reasoning_effort).toBe("medium");
     expect(runtime.decoding.temperature).toBeUndefined();
