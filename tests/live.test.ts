@@ -9,6 +9,9 @@ import {
 } from "../src/env-file.ts";
 import { ROOT } from "./root.ts";
 
+/** Live calls cost money: opt in with JUDGELOCK_LIVE=1, never by a key alone. */
+const live = process.env.JUDGELOCK_LIVE === "1";
+
 const hasOpenAiKey = (): boolean => {
   loadEnvFile(ROOT);
   return Boolean(process.env[OPENAI_ENV_KEY]);
@@ -31,7 +34,7 @@ describe("environment", () => {
   });
 });
 
-describe.skipIf(!hasOpenAiKey())("live OpenAI API key", () => {
+describe.skipIf(!live || !hasOpenAiKey())("live OpenAI API key", () => {
   it("passes the smoke test", async () => {
     const result = await runApiKeyTests(ROOT);
     const openai = result.lines.find((line) => line.provider === "OpenAI");
@@ -40,7 +43,7 @@ describe.skipIf(!hasOpenAiKey())("live OpenAI API key", () => {
   });
 });
 
-describe.skipIf(!hasAnthropicKey())("live Anthropic API key", () => {
+describe.skipIf(!live || !hasAnthropicKey())("live Anthropic API key", () => {
   it("passes the smoke test", async () => {
     const result = await runApiKeyTests(ROOT);
     const anthropic = result.lines.find((line) => line.provider === "Anthropic");

@@ -18,11 +18,12 @@ import {
   hashBlob,
   normalizeBlob,
 } from "./identity.ts";
-import { parseVerdict } from "./judge.ts";
+import { buildJudgeRequest, parseVerdict, requestSha256 } from "./judge.ts";
 import {
   ManifestSchema,
   type EvaluatorConfig,
   type Manifest,
+  type Observation,
   type Results,
   type Threshold,
   type VerifyFailure,
@@ -76,6 +77,24 @@ export function checkThresholds(
 }
 
 /**
+ * Promotable evidence has exactly `runs` observations per case, the count
+ * pinned in validation/thresholds.json. Returns one manifest_invalid
+ * otherwise. Assumes checkCoverage is clean, so every case has one count.
+ */
+export function checkRuns(observations: Observation[], runs: number): VerifyFailure[] {
+  const perCase = new Map<string, number>();
+  for (const o of observations) perCase.set(o.case_id, (perCase.get(o.case_id) ?? 0) + 1);
+  const counts = [...new Set(perCase.values())];
+  if (counts.length === 1 && counts[0] === runs) return [];
+  return [
+    {
+      kind: "manifest_invalid",
+      detail: `evidence has ${counts.join(", ") || "0"} runs per case; ${THRESHOLDS_PATH} requires ${runs}`,
+    },
+  ];
+}
+
+/**
  * The CI gate. Offline, deterministic, no network.
  *
  * Recomputes the evaluator id from the working tree and the corpus hash from
@@ -89,22 +108,30 @@ export function checkThresholds(
  * manifest whose evaluator_id is not the combination of its stated
  * components; a resolved_model_id that is not the model the model_id
  * component was hashed from; any identity component differing from the
- * approved one (named per component); the corpus hash differing; manifest thresholds differing
+ * approved one (named per component); the corpus hash differing; with
+ * neither of those, any observation whose request_sha256 is not the hash of
+ * the request the working tree would send for its case (one aggregated
+ * request_mismatch: a re-stamped manifest whose evidence came from a
+ * different request); manifest thresholds differing
  * from validation/thresholds.json; a stated verdict that a reparse of its raw
  * judge response does not reproduce; observations not covering the current
- * cases exactly; stated results disagreeing with a recomputation; or a
- * recomputed metric violating (or missing for) a threshold.
+ * cases exactly; a run count per case other than validation/thresholds.json's
+ * runs; stated results disagreeing with a recomputation; or a recomputed
+ * metric violating (or missing for) a threshold. Never constructs an API
+ * client: the request is rebuilt by the pure buildJudgeRequest.
  *
  * Manifest problems are reported, never thrown. Missing evaluator inputs
  * (rubric, config, corpus, thresholds) throw: there is nothing to verify
  * against.
  */
 export function verify({ root }: VerifyOptions): VerifyResult {
-  const working = componentHashes(loadEvaluatorConfig(root));
+  const config = loadEvaluatorConfig(root);
+  const working = componentHashes(config);
   const evaluator_id = combineComponentHashes(working);
   const cases = loadCorpus(join(root, CASES_PATH));
-  const corpus_hash = computeCorpusHash(cases, loadReferenceDocuments(root));
-  const thresholds = loadThresholds(root).thresholds;
+  const documents = loadReferenceDocuments(root);
+  const corpus_hash = computeCorpusHash(cases, documents);
+  const { thresholds, runs } = loadThresholds(root);
   const failures: VerifyFailure[] = [];
   const result = (): VerifyResult => ({
     ok: failures.length === 0,
@@ -205,6 +232,33 @@ export function verify({ root }: VerifyOptions): VerifyResult {
     });
   }
 
+  // Only when identity and corpus match: either mismatch already explains why
+  // the working tree would send a different request.
+  if (!failures.some((f) => f.kind === "evaluator_id_mismatch" || f.kind === "corpus_hash_mismatch")) {
+    const byId = new Map(cases.map((c) => [c.id, c]));
+    const expected = new Map<string, string>();
+    const mismatched: string[] = [];
+    let checked = 0;
+    for (const o of observations) {
+      const c = byId.get(o.case_id);
+      if (!c) continue;
+      checked++;
+      let hash = expected.get(c.id);
+      if (hash === undefined) {
+        hash = requestSha256(buildJudgeRequest(config, documents, c));
+        expected.set(c.id, hash);
+      }
+      if (o.request_sha256 !== hash) mismatched.push(o.case_id);
+    }
+    if (mismatched.length > 0) {
+      const first = [...new Set(mismatched)].slice(0, 5).map((id) => JSON.stringify(id));
+      failures.push({
+        kind: "request_mismatch",
+        detail: `${mismatched.length} of ${checked} observations were judged with a request the working tree would not send; first: ${first.join(", ")}`,
+      });
+    }
+  }
+
   if (manifest.threshold_source !== THRESHOLDS_PATH) {
     failures.push({
       kind: "manifest_invalid",
@@ -238,6 +292,7 @@ export function verify({ root }: VerifyOptions): VerifyResult {
     failures.push({ kind: "manifest_invalid", subject: p.case_id, detail: p.detail });
   }
   if (coverage.length > 0) return result();
+  failures.push(...checkRuns(manifest.raw_observations, runs));
 
   const recomputed = computeResults(manifest.raw_observations, cases);
   const names = [...new Set([...Object.keys(manifest.results), ...Object.keys(recomputed)])].sort();

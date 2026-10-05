@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import {
   APPROVED_MANIFEST_PATH,
   CASES_PATH,
+  THRESHOLDS_PATH,
   loadCorpus,
   loadEvaluatorRuntimeConfig,
+  loadThresholds,
 } from "./config.ts";
 import { loadEnvFile } from "./env-file.ts";
 import { renderReport, thresholdRows, verdictLine } from "./report.ts";
 import type { Manifest } from "./types.ts";
 import { serializeManifest, validate } from "./validate.ts";
-import { formatVerifyResult, verify } from "./verify.ts";
-import { runShell } from "./shell/repl.ts";
+import { checkRuns, formatVerifyResult, verify } from "./verify.ts";
 
 const USAGE = `judgelock <command> [options]
 
@@ -28,11 +29,12 @@ Commands:
 
 Options:
   --root <dir>   Repository root. Default: .
-  --runs <n>     validate only. Repeats per case, 1 to 10. Default: 3
-                 The thresholds require self_consistency, which needs >= 2.
+  --runs <n>     validate only. Repeats per case, 1 to 10. Default: the runs
+                 pinned in validation/thresholds.json, the only promotable count.
   --out <path>   validate only. Candidate manifest path, relative to --root.
                  Default: validation/candidate-manifest.json
-                 Refused if it is validation/approved-manifest.json.
+                 Must be a .json file inside validation/, and not
+                 validation/approved-manifest.json or validation/thresholds.json.
   -h, --help     Show this message.
 `;
 
@@ -40,7 +42,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     root: { type: "string", default: "." },
-    runs: { type: "string", default: "3" },
+    runs: { type: "string" },
     out: { type: "string", default: "validation/candidate-manifest.json" },
     help: { type: "boolean", short: "h", default: false },
   },
@@ -56,6 +58,8 @@ if (values.help) {
 
 switch (command) {
   case "shell": {
+    // Lazy: verify and validate never load shell or agent modules.
+    const { runShell } = await import("./shell/repl.ts");
     await runShell(root);
     break;
   }
@@ -67,12 +71,27 @@ switch (command) {
   case "validate": {
     // Failure paths set exitCode and break rather than process.exit: SDK
     // sockets may still be open, and exiting under them aborts on Windows.
+    // Case-insensitive where the default filesystem is.
+    const fold = (p: string): string =>
+      process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p;
     const outPath = resolve(root, values.out ?? "validation/candidate-manifest.json");
-    const approvedPath = resolve(root, APPROVED_MANIFEST_PATH);
-    const fold = (p: string): string => (process.platform === "win32" ? p.toLowerCase() : p);
-    if (fold(outPath) === fold(approvedPath)) {
+    const inValidation = relative(fold(resolve(root, "validation")), fold(outPath));
+    if (
+      inValidation === "" ||
+      inValidation === ".." ||
+      inValidation.startsWith(`..${sep}`) ||
+      isAbsolute(inValidation) ||
+      !fold(outPath).endsWith(".json")
+    ) {
       console.error(
-        `judgelock validate: --out must not be ${APPROVED_MANIFEST_PATH}; promotion is a reviewed copy in a PR`,
+        `judgelock validate: --out must be a .json file inside validation/, got ${JSON.stringify(values.out)}`,
+      );
+      process.exitCode = 1;
+      break;
+    }
+    if ([APPROVED_MANIFEST_PATH, THRESHOLDS_PATH].some((p) => fold(resolve(root, p)) === fold(outPath))) {
+      console.error(
+        `judgelock validate: --out must not be ${APPROVED_MANIFEST_PATH} or ${THRESHOLDS_PATH}; promotion is a reviewed copy in a PR`,
       );
       process.exitCode = 1;
       break;
@@ -80,7 +99,8 @@ switch (command) {
     // ponytail: cap guards a typo'd 10x spend; raise if a larger
     // self-consistency sample is wanted.
     const MAX_RUNS = 10;
-    const runsArg = values.runs ?? "3";
+    const requiredRuns = loadThresholds(root).runs;
+    const runsArg = values.runs ?? String(requiredRuns);
     if (!/^[1-9]\d*$/.test(runsArg) || Number(runsArg) > MAX_RUNS) {
       console.error(
         `judgelock validate: --runs must be an integer from 1 to ${MAX_RUNS}, got ${JSON.stringify(runsArg)}`,
@@ -119,6 +139,7 @@ switch (command) {
       manifest,
       cases: loadCorpus(join(root, CASES_PATH)),
       runs,
+      requiredRuns,
       configuredModelId: loadEvaluatorRuntimeConfig(root).model_id,
       generatedAt,
       candidateSha256,
@@ -139,7 +160,7 @@ switch (command) {
         `${r.pass ? "PASS" : "FAIL"} ${r.threshold.metric} = ${value} (${r.threshold.direction} ${r.threshold.bound})`,
       );
     }
-    console.log(verdictLine(rows));
+    console.log(verdictLine(rows, checkRuns(manifest.raw_observations, requiredRuns)));
     break;
   }
   default:

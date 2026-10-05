@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: Repeats per case; must be >= 2 for self_consistency, which the thresholds require
+        description: Repeats per case; only the runs pinned in validation/thresholds.json (3) is promotable
         required: false
         default: "3"
 
@@ -27,7 +27,7 @@ jobs:
           node-version: "22"
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # The input reaches the shell only as an env var; inlining it would be
       # shell injection with a token that can push to the branch.
@@ -35,10 +35,17 @@ jobs:
         env:
           RUNS: ${{ inputs.runs }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      # Committed to the branch, not uploaded as an artifact: artifacts expire,
-      # and a validation record has to stay permanently linkable.
+      # Paid evidence survives a failed run or push. The artifact expires; the
+      # commit below is the permanently linkable record.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ github.run_id }}
+          path: validation/
+
+      # Committed to the branch: artifacts expire, and a validation record has
+      # to stay permanently linkable.
       - name: Commit candidate manifest and report
         run: |
           git config user.name "github-actions[bot]"

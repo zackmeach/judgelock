@@ -14,7 +14,13 @@ import {
   computeCorpusHash,
   computeEvaluatorId,
 } from "./identity.ts";
-import { callJudge, parseVerdict, type JudgeResponse } from "./judge.ts";
+import {
+  buildJudgeRequest,
+  callJudge,
+  parseVerdict,
+  requestSha256,
+  type JudgeResponse,
+} from "./judge.ts";
 import {
   ManifestSchema,
   type EvaluatorConfig,
@@ -118,6 +124,13 @@ export function checkCoverage(
  * - invalid_output_rate: observations labeled invalid_judge_output.
  * - self_consistency: only when every case has at least 2 observations; the
  *   fraction of cases whose observations all share one label.
+ *
+ * Report-only (measured, never gated by a threshold):
+ * - false_pass_rate: among observations of non-pass cases, the fraction the
+ *   judge labeled pass.
+ * - severity_agreement: among observations of non-pass cases that the judge
+ *   labeled neither pass nor invalid_judge_output, the fraction whose severity
+ *   equals the human severity.
  */
 export function computeResults(
   observations: Observation[],
@@ -129,6 +142,10 @@ export function computeResults(
   let invalid = 0;
   let critical = 0;
   let criticalMissed = 0;
+  let nonPass = 0;
+  let falsePass = 0;
+  let severityRated = 0;
+  let severityAgreed = 0;
 
   for (const o of observations) {
     const c = byId.get(o.case_id);
@@ -139,6 +156,14 @@ export function computeResults(
     if (c.human_label !== "pass" && c.human_severity === "critical") {
       critical++;
       if (label === "pass") criticalMissed++;
+    }
+    if (c.human_label !== "pass") {
+      nonPass++;
+      if (label === "pass") falsePass++;
+      else if (label !== "invalid_judge_output") {
+        severityRated++;
+        if (o.verdict.severity === c.human_severity) severityAgreed++;
+      }
     }
     const labels = labelsByCase.get(c.id) ?? [];
     labels.push(label);
@@ -159,6 +184,8 @@ export function computeResults(
     ).length;
     results.self_consistency = consistent / cases.length;
   }
+  if (nonPass > 0) results.false_pass_rate = falsePass / nonPass;
+  if (severityRated > 0) results.severity_agreement = severityAgreed / severityRated;
   return results;
 }
 
@@ -220,10 +247,18 @@ export function buildManifest(input: BuildManifestInput): Manifest {
  * metric, not an error). A judge call that rejects (after the SDK's own
  * retries) aborts the run: no new calls are started, calls already in flight
  * are discarded, and the returned promise rejects naming the case and run.
- * A throwing onObservation aborts the same way. The run also rejects if a
- * response reports no served model, if the API reported serving more than
- * one model — evidence spanning two models describes neither — or if the one
- * served model is not the configured model_id, which verify would reject.
+ * A throwing onObservation aborts the same way, and so does the first
+ * response that reports no served model or a served model other than the
+ * configured model_id (verify would reject that candidate).
+ *
+ * Each observation records the sha256 of the request validate would send for
+ * its case (requestSha256(buildJudgeRequest(...)), computed here, not by the
+ * judge) and the response's id, finish_reason and refusal.
+ *
+ * Any integer runs >= 1 is accepted: exploration runs are allowed, but only
+ * evidence with validation/thresholds.json's runs is promotable (verify).
+ * Rejects before any call if OPENAI_BASE_URL is set: it reroutes the judge and
+ * is not recorded in the evidence.
  */
 export async function validate(opts: ValidateOptions): Promise<Manifest> {
   // ponytail: fixed pool of 4, no adaptive rate limiting; the OpenAI SDK's
@@ -234,6 +269,11 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
     if (!Number.isInteger(value) || value < 1) {
       throw new Error(`${name} must be an integer >= 1, got ${value}`);
     }
+  }
+  if (process.env.OPENAI_BASE_URL !== undefined) {
+    throw new Error(
+      "OPENAI_BASE_URL reroutes the judge and is not recorded in the evidence; unset it",
+    );
   }
   const judge = opts.judge ?? callJudge;
   const config = loadEvaluatorConfig(opts.root);
@@ -247,13 +287,13 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
     Array.from({ length: opts.runs }, (_, run_index) => ({ testCase, run_index })),
   );
   const observations: Observation[] = [];
-  const resolvedModelIds = new Set<string>();
   let next = 0;
   let failed = false;
 
   const runJob = async ({ testCase, run_index }: (typeof jobs)[number]): Promise<void> => {
     const where = `case ${testCase.id} run ${run_index}`;
     try {
+      const request_sha256 = requestSha256(buildJudgeRequest(config, documents, testCase));
       let response: JudgeResponse;
       try {
         response = await judge(config, documents, testCase, { provider });
@@ -265,12 +305,22 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
       if (response.resolved_model_id.trim() === "") {
         throw new Error(`judge API reported no served model on ${where}`);
       }
-      resolvedModelIds.add(response.resolved_model_id);
+      if (response.resolved_model_id !== config.model_id) {
+        throw new Error(
+          `judge API served ${JSON.stringify(response.resolved_model_id)} but the configured model_id is ${JSON.stringify(config.model_id)}; verify would reject this candidate (resolved_model_id binding)`,
+        );
+      }
       const observation: Observation = {
         case_id: testCase.id,
         run_index,
+        request_sha256,
         verdict: parseVerdict(response.raw),
         raw_judge_response: response.raw,
+        response: {
+          id: response.response_id,
+          finish_reason: response.finish_reason,
+          refusal: response.refusal,
+        },
       };
       observations.push(observation);
       opts.onObservation?.(observation, observations.length, jobs.length);
@@ -285,23 +335,12 @@ export async function validate(opts: ValidateOptions): Promise<Manifest> {
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
 
-  const served = [...resolvedModelIds].sort(compareCodeUnits);
-  if (served.length !== 1) {
-    throw new Error(
-      `judge API served more than one model during the run: ${served.map((id) => JSON.stringify(id)).join(", ")}`,
-    );
-  }
-  if (served[0] !== config.model_id) {
-    throw new Error(
-      `judge API served ${JSON.stringify(served[0])} but the configured model_id is ${JSON.stringify(config.model_id)}; verify would reject this candidate (resolved_model_id binding)`,
-    );
-  }
   return buildManifest({
     config,
     cases,
     documents,
     observations,
-    resolvedModelId: served[0]!,
+    resolvedModelId: config.model_id,
     thresholds,
   });
 }

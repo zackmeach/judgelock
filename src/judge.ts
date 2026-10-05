@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import OpenAI from "openai";
 import type { Provider } from "./config.ts";
 import { OPENAI_ENV_KEY, requireEnv } from "./env-file.ts";
@@ -15,11 +16,16 @@ export interface JudgeResponse {
   raw: string;
   /** The model id the API reported actually serving this request. */
   resolved_model_id: string;
+  /** The API's response id. */
+  response_id: string;
+  /** choices[0].finish_reason: "length" marks a truncation. */
+  finish_reason: string | null;
+  /** choices[0].message.refusal: set when the model refused. */
+  refusal: string | null;
 }
 
 export interface JudgeCallOptions {
-  /** Defaults to inference from model_id when omitted. */
-  provider?: Provider;
+  provider: Provider;
 }
 
 const INVALID_VERDICT: Verdict = {
@@ -27,19 +33,6 @@ const INVALID_VERDICT: Verdict = {
   severity: "standard",
   evidence: "",
 };
-
-function inferProvider(modelId: string): Provider {
-  const id = modelId.toLowerCase();
-  if (id.startsWith("gpt-") || id.startsWith("o1") || id.startsWith("o3")) {
-    return "openai";
-  }
-  if (id.startsWith("claude-")) {
-    return "anthropic";
-  }
-  throw new Error(
-    `cannot infer API provider for model_id ${modelId}; pass provider explicitly`,
-  );
-}
 
 const PROMPT_PLACEHOLDERS = ["rubric", "documents", "question", "answer"] as const;
 export type PromptValues = Record<(typeof PROMPT_PLACEHOLDERS)[number], string>;
@@ -83,8 +76,11 @@ export function renderDocuments(documents: ReferenceDocument[]): string {
     .join("\n\n");
 }
 
-/** Schema sent to the judge API — harness-owned labels are excluded. */
-function judgeOutputSchema(outputSchema: unknown): Record<string, unknown> {
+/**
+ * Schema sent to the judge API — harness-owned labels are excluded. Works on
+ * a clone: the input is not mutated, and key order is kept.
+ */
+export function judgeWireSchema(outputSchema: unknown): Record<string, unknown> {
   const schema = structuredClone(outputSchema) as Record<string, unknown>;
   const properties = schema.properties as
     | Record<string, Record<string, unknown>>
@@ -98,12 +94,16 @@ function judgeOutputSchema(outputSchema: unknown): Record<string, unknown> {
   return schema;
 }
 
-async function callOpenAiJudge(
+/**
+ * The exact params object the OpenAI judge call sends. Pure: validate hashes
+ * it into each observation and verify recomputes it from the working tree,
+ * without a client or the network.
+ */
+export function buildJudgeRequest(
   config: EvaluatorConfig,
   documents: ReferenceDocument[],
   testCase: GoldenCase,
-): Promise<JudgeResponse> {
-  const client = new OpenAI({ apiKey: requireEnv(OPENAI_ENV_KEY) });
+): OpenAI.ChatCompletionCreateParamsNonStreaming {
   const prompt = renderPrompt(config.judge_prompt_template, {
     rubric: config.rubric,
     documents: renderDocuments(documents),
@@ -111,7 +111,7 @@ async function callOpenAiJudge(
     answer: testCase.answer,
   });
 
-  const response = await client.chat.completions.create({
+  return {
     model: config.model_id,
     messages: [{ role: "user", content: prompt }],
     max_completion_tokens: config.decoding.max_tokens,
@@ -132,10 +132,31 @@ async function callOpenAiJudge(
       json_schema: {
         name: "verdict",
         strict: true,
-        schema: judgeOutputSchema(config.output_schema),
+        schema: judgeWireSchema(config.output_schema),
       },
     },
-  });
+  };
+}
+
+/**
+ * sha256 hex of JSON.stringify(request): the body bytes the SDK sends. No
+ * normalization, so any change to what is sent changes the hash.
+ */
+export function requestSha256(
+  request: OpenAI.ChatCompletionCreateParamsNonStreaming,
+): string {
+  return createHash("sha256").update(JSON.stringify(request), "utf8").digest("hex");
+}
+
+async function callOpenAiJudge(
+  config: EvaluatorConfig,
+  documents: ReferenceDocument[],
+  testCase: GoldenCase,
+): Promise<JudgeResponse> {
+  const client = new OpenAI({ apiKey: requireEnv(OPENAI_ENV_KEY) });
+  const response = await client.chat.completions.create(
+    buildJudgeRequest(config, documents, testCase),
+  );
 
   const choice = response.choices[0];
   const raw = choice?.message?.content ?? "";
@@ -143,7 +164,13 @@ async function callOpenAiJudge(
   // of recording a served model the API never reported.
   const resolved_model_id = response.model ?? "";
 
-  return { raw, resolved_model_id };
+  return {
+    raw,
+    resolved_model_id,
+    response_id: response.id ?? "",
+    finish_reason: choice?.finish_reason ?? null,
+    refusal: choice?.message?.refusal ?? null,
+  };
 }
 
 /**
@@ -155,9 +182,9 @@ export async function callJudge(
   config: EvaluatorConfig,
   documents: ReferenceDocument[],
   testCase: GoldenCase,
-  options?: JudgeCallOptions,
+  options: JudgeCallOptions,
 ): Promise<JudgeResponse> {
-  const provider = options?.provider ?? inferProvider(config.model_id);
+  const { provider } = options;
 
   switch (provider) {
     case "openai":
