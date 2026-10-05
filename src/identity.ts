@@ -147,10 +147,14 @@ export function computeCorpusHash(
  * and absent in CI. It also closes the seam — `verify` executes these same .ts
  * files via Node's type stripping, so the digested files are byte-for-byte the
  * code that runs. Digesting a transformed artifact would break that equality.
- * The digest covers the scoring path's own code, not everything it imports:
- * the import-closure test in tests/identity.test.ts enforces that every
- * runtime import of a digested file is itself digested or allowlisted there
- * with a reason.
+ * The digest covers the scoring path's own code, not everything it imports.
+ * The import-closure test in tests/identity.test.ts checks that every
+ * relative specifier string literal in a digested file resolves to a
+ * digested file or to one allowlisted there with a reason, and fails if a
+ * digested file loads a module by any require-based call or by a dynamic
+ * import whose argument is not a string literal (the test names the exact
+ * patterns; this comment avoids spelling them so it does not trip them).
+ * Package imports are covered by the lockfile.
  *
  * Blobs go through normalizeBlob before hashing.
  */

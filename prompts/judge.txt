@@ -27,5 +27,7 @@ quote what the verdict rests on:
   establish it.
 - incomplete: the document text the answer leaves out, or for a non-answer,
   the question it fails to answer.
-- pass: the document text that supports the answer's central claim.
+- pass: the document text that supports the answer's central claim; if the
+  answer says the documents do not establish something, state that they do
+  not.
 Never emit the label invalid_judge_output; the harness reserves it.

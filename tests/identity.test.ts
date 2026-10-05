@@ -128,55 +128,92 @@ describe("implementation digest scope", () => {
   };
 
   /**
-   * Relative runtime imports of one source file, resolved to repo paths.
-   * `import type` / `export type` are erased at runtime and skipped. `[^;]*?`
-   * keeps a match inside one statement, so multi-line specifier lists work.
+   * `import type` targets that are not digested. The specifier scan below
+   * cannot tell a type-only import from a runtime one, so a type-only import
+   * of an undigested file would fail the closure check even though it is
+   * erased before the code runs. Entries go here, each with a reason, rather
+   * than in DIGEST_EXEMPT, so runtime exemptions stay a short audited list.
+   * Empty today.
    */
-  function runtimeRelativeImports(file: string, source: string): string[] {
-    const specs: string[] = [];
-    for (const m of source.matchAll(
-      /^\s*(?:import|export)\s+(type\s+)?[^;]*?\bfrom\s*["']([^"']+)["']/gm,
-    )) {
-      if (!m[1]) specs.push(m[2]!);
-    }
-    for (const m of source.matchAll(/^\s*import\s*["']([^"']+)["']/gm)) {
-      specs.push(m[1]!);
-    }
-    for (const m of source.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)) {
-      specs.push(m[1]!);
-    }
-    return specs
-      .filter((s) => s.startsWith("."))
-      .map((s) => posix.join(posix.dirname(file), s));
+  const TYPE_ONLY_EXEMPT: Record<string, string> = {};
+
+  /**
+   * Every relative specifier string literal in a source file ("./x", '../x',
+   * `./x`), resolved to a repo path, whatever syntax surrounds it: static,
+   * side-effect, re-export, dynamic, createRequire, several per line, after
+   * a comment. Over-collecting (any such string counts, type-only imports
+   * included) is the fail-closed direction.
+   */
+  function relativeSpecifiers(file: string, source: string): string[] {
+    return [...source.matchAll(/(["'`])(\.{1,2}\/[^"'`\s]+)\1/g)].map((m) =>
+      posix.join(posix.dirname(file), m[2]!),
+    );
   }
 
-  it("extracts runtime imports and skips type-only ones", () => {
+  /** Module loads whose target a string scan cannot pin down. */
+  function unresolvableLoads(source: string): string[] {
+    const found: string[] = [];
+    for (const m of source.matchAll(/\brequire\s*\(|\bcreateRequire\b/g)) {
+      found.push(m[0]);
+    }
+    for (const m of source.matchAll(
+      /\bimport\s*\((?!\s*(?:"[^"]*"|'[^']*'|`[^`$]*`)\s*\))/g,
+    )) {
+      found.push(m[0]);
+    }
+    return found;
+  }
+
+  it("catches relative specifiers whatever the surrounding syntax", () => {
     const source = [
-      'import type { A } from "./agent.ts";',
-      'import type {\n  B,\n} from "./cli.ts";',
-      'import {\n  c,\n  type D,\n} from "./c.ts";',
+      'import type { A } from "./types-only.ts";',
+      'import {\n  c,\n  type D,\n} from "./multi-line.ts";',
       'import "./side.ts";',
-      'export { e } from "./e.ts";',
+      "const t = await import(`./template.ts`);",
+      'const r = createRequire(import.meta.url)("./create-require.ts");',
+      'import { a } from "./first.ts"; import { b } from "./same-line.ts";',
+      '/* leading comment */ import { e } from "./after-comment.ts";',
+      'export type T = string\nexport { f } from "./re-export.ts";',
       'import z from "zod";',
     ].join("\n");
-    expect(runtimeRelativeImports("src/x.ts", source).sort()).toEqual(
-      ["src/c.ts", "src/e.ts", "src/side.ts"],
-    );
+    expect(relativeSpecifiers("src/x.ts", source).sort()).toEqual([
+      "src/after-comment.ts",
+      "src/create-require.ts",
+      "src/first.ts",
+      "src/multi-line.ts",
+      "src/re-export.ts",
+      "src/same-line.ts",
+      "src/side.ts",
+      "src/template.ts",
+      "src/types-only.ts",
+    ]);
+    expect(unresolvableLoads(source)).toEqual(["createRequire"]);
   });
 
-  it("every runtime import of a digested file is digested or allowlisted", () => {
+  it("flags require and non-literal dynamic import", () => {
+    expect(unresolvableLoads('require("./a.ts")')).toEqual(["require("]);
+    expect(unresolvableLoads("import(name)")).toEqual(["import("]);
+    expect(unresolvableLoads("import(`./${name}.ts`)")).toEqual(["import("]);
+    expect(unresolvableLoads('import("./a.ts"); import(`./b.ts`)')).toEqual([]);
+    expect(unresolvableLoads("requireEnv(KEY)")).toEqual([]);
+  });
+
+  it("every relative specifier in a digested file is digested or allowlisted", () => {
     const seen = new Set<string>();
     for (const file of IMPLEMENTATION_DIGEST_PATHS.filter((p) => p.startsWith("src/"))) {
       const source = readFileSync(join(ROOT, file), "utf8");
-      for (const dep of runtimeRelativeImports(file, source)) {
+      expect(unresolvableLoads(source), `${file} loads a module the scan cannot resolve`).toEqual([]);
+      for (const dep of relativeSpecifiers(file, source)) {
         seen.add(dep);
         expect(
-          IMPLEMENTATION_DIGEST_PATHS.includes(dep) || dep in DIGEST_EXEMPT,
-          `${file} imports ${dep}, which is neither digested nor allowlisted`,
+          IMPLEMENTATION_DIGEST_PATHS.includes(dep) ||
+            dep in DIGEST_EXEMPT ||
+            dep in TYPE_ONLY_EXEMPT,
+          `${file} references ${dep}, which is neither digested nor allowlisted`,
         ).toBe(true);
       }
     }
-    // Guards against the extractor silently finding nothing.
+    // Guards against the scan silently finding nothing.
     expect([...seen]).toEqual(
       expect.arrayContaining(["src/types.ts", "src/identity.ts", "src/env-file.ts", "src/corpus-docs.ts"]),
     );
